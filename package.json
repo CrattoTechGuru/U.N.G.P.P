@@ -1,0 +1,17 @@
+{
+  "name": "ultra-next-gen-pro-predictor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production football prediction application using live API-Football/API-Sports data.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check src/api-football.js && node --check src/predictor.js && node --check src/db.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "express": "^5.1.0",
+    "pg": "^8.16.3"
+  }
+}
