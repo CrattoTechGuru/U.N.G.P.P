@@ -111,7 +111,7 @@ app.get("/api/slips", async (_req, res) => {
   catch (e) { fail(res, 500, e.message); }
 });
 
-app.get("*", (_req, res) => {
+app.get("'/{*splat}'", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
