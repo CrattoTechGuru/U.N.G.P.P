@@ -3,6 +3,7 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 
 const app = express();
 
@@ -24,13 +25,12 @@ const STORE_FILE = path.join(DATA_DIR, "store.json");
 // ENVIRONMENT
 // ============================================================
 
-const NODE_ENV = process.env.NODE_ENV || "production";
+const NODE_ENV =
+  process.env.NODE_ENV || "production";
 
-// Current provider
 const FOOTBALL_SOCCER_API_KEY =
   process.env.FOOTBALL_SOCCER_API_KEY || "";
 
-// Legacy provider variables retained for compatibility
 const FOOTBALL_DATA_API_KEY =
   process.env.FOOTBALL_DATA_API_KEY || "";
 
@@ -47,7 +47,9 @@ const UPCOMING_DAYS =
   Number(process.env.UPCOMING_DAYS) || 7;
 
 const SYNC_INTERVAL_MINUTES =
-  Number(process.env.SYNC_INTERVAL_MINUTES) || 30;
+  Number(
+    process.env.SYNC_INTERVAL_MINUTES
+  ) || 30;
 
 // ============================================================
 // DIRECTORIES
@@ -77,57 +79,83 @@ ensureDirectory(DATA_DIR);
 function defaultStore() {
   return {
     users: [],
+    sessions: [],
     slips: [],
     predictions: [],
     settings: {},
-    createdAt: new Date().toISOString()
+    createdAt:
+      new Date().toISOString()
   };
 }
 
 function readStore() {
   try {
     if (!fs.existsSync(STORE_FILE)) {
-      const initial = defaultStore();
+      const initial =
+        defaultStore();
 
       fs.writeFileSync(
         STORE_FILE,
-        JSON.stringify(initial, null, 2),
+        JSON.stringify(
+          initial,
+          null,
+          2
+        ),
         "utf8"
       );
 
       return initial;
     }
 
-    const raw = fs.readFileSync(
-      STORE_FILE,
-      "utf8"
-    );
+    const raw =
+      fs.readFileSync(
+        STORE_FILE,
+        "utf8"
+      );
 
     if (!raw.trim()) {
       return defaultStore();
     }
 
-    const parsed = JSON.parse(raw);
+    const parsed =
+      JSON.parse(raw);
 
     return {
       ...defaultStore(),
       ...parsed,
 
-      users: Array.isArray(parsed.users)
-        ? parsed.users
-        : [],
+      users:
+        Array.isArray(
+          parsed.users
+        )
+          ? parsed.users
+          : [],
 
-      slips: Array.isArray(parsed.slips)
-        ? parsed.slips
-        : [],
+      sessions:
+        Array.isArray(
+          parsed.sessions
+        )
+          ? parsed.sessions
+          : [],
 
-      predictions: Array.isArray(parsed.predictions)
-        ? parsed.predictions
-        : [],
+      slips:
+        Array.isArray(
+          parsed.slips
+        )
+          ? parsed.slips
+          : [],
+
+      predictions:
+        Array.isArray(
+          parsed.predictions
+        )
+          ? parsed.predictions
+          : [],
 
       settings:
         parsed.settings &&
-        typeof parsed.settings === "object"
+        typeof parsed.settings ===
+          "object"
           ? parsed.settings
           : {}
     };
@@ -147,7 +175,11 @@ function writeStore(data) {
 
     fs.writeFileSync(
       STORE_FILE,
-      JSON.stringify(data, null, 2),
+      JSON.stringify(
+        data,
+        null,
+        2
+      ),
       "utf8"
     );
 
@@ -163,162 +195,223 @@ function writeStore(data) {
 }
 
 // ============================================================
-// MIDDLEWARE
+// COOKIE HELPERS
 // ============================================================
 
-app.disable("x-powered-by");
+function parseCookies(req) {
+  const header =
+    req.headers.cookie || "";
 
-app.use(
-  express.json({
-    limit: "5mb"
-  })
-);
+  const cookies = {};
 
-app.use(
-  express.urlencoded({
-    extended: true,
-    limit: "5mb"
-  })
-);
+  if (!header) {
+    return cookies;
+  }
 
-// ============================================================
-// REQUEST LOGGING
-// ============================================================
+  header
+    .split(";")
+    .forEach(pair => {
+      const index =
+        pair.indexOf("=");
 
-app.use((req, res, next) => {
-  const started = Date.now();
+      if (index === -1) {
+        return;
+      }
 
-  res.on("finish", () => {
-    const elapsed = Date.now() - started;
+      const key =
+        pair
+          .slice(0, index)
+          .trim();
 
-    console.log(
-      `${req.method} ${req.originalUrl} ${res.statusCode} ${elapsed}ms`
-    );
-  });
+      const value =
+        pair
+          .slice(index + 1)
+          .trim();
 
-  next();
-});
-
-// ============================================================
-// HEALTH
-// ============================================================
-
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    ok: true,
-    status: "online",
-    app: "Ultra Next Gen Pro Predictor",
-    version: "V1000",
-    environment: NODE_ENV,
-    port: PORT,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ============================================================
-// ROOT API
-// ============================================================
-
-app.get("/api", (req, res) => {
-  res.json({
-    ok: true,
-    app: "Ultra Next Gen Pro Predictor",
-    version: "V1000",
-    message: "API online"
-  });
-});
-
-// ============================================================
-// API STATUS
-// ============================================================
-
-app.get("/api/status", (req, res) => {
-  res.json({
-    ok: true,
-    app: "Ultra Next Gen Pro Predictor",
-    version: "V1000",
-
-    providers: {
-      footballSoccer: Boolean(
-        FOOTBALL_SOCCER_API_KEY
-      ),
-
-      footballData: Boolean(
-        FOOTBALL_DATA_API_KEY
-      ),
-
-      apiFootball: Boolean(
-        API_FOOTBALL_KEY
-      )
-    },
-
-    database: Boolean(
-      DATABASE_URL
-    ),
-
-    localStore: fs.existsSync(
-      STORE_FILE
-    ),
-
-    frontend: fs.existsSync(
-      INDEX_FILE
-    ),
-
-    upcomingDays: UPCOMING_DAYS,
-
-    syncIntervalMinutes:
-      SYNC_INTERVAL_MINUTES,
-
-    timestamp:
-      new Date().toISOString()
-  });
-});
-
-// ============================================================
-// CONFIGURATION STATUS
-// ============================================================
-
-app.get(
-  "/api/config/status",
-  (req, res) => {
-    res.json({
-      ok: true,
-
-      footballSoccer: {
-        configured: Boolean(
-          FOOTBALL_SOCCER_API_KEY
-        ),
-        provider:
-          "Football Soccer API"
-      },
-
-      footballData: {
-        configured: Boolean(
-          FOOTBALL_DATA_API_KEY
-        ),
-        provider:
-          "football-data.org"
-      },
-
-      apiFootball: {
-        configured: Boolean(
-          API_FOOTBALL_KEY
-        ),
-        provider:
-          "API-Football"
-      },
-
-      database: {
-        configured: Boolean(
-          DATABASE_URL
-        )
+      if (key) {
+        cookies[key] =
+          decodeURIComponent(
+            value
+          );
       }
     });
+
+  return cookies;
+}
+
+function setSessionCookie(
+  res,
+  sessionId
+) {
+  const parts = [
+    `ungpp_session=${encodeURIComponent(
+      sessionId
+    )}`,
+
+    "Path=/",
+
+    "HttpOnly",
+
+    "SameSite=Lax"
+  ];
+
+  if (
+    NODE_ENV ===
+    "production"
+  ) {
+    parts.push("Secure");
   }
-);
+
+  res.setHeader(
+    "Set-Cookie",
+    parts.join("; ")
+  );
+}
+
+function clearSessionCookie(res) {
+  const parts = [
+    "ungpp_session=",
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0"
+  ];
+
+  if (
+    NODE_ENV ===
+    "production"
+  ) {
+    parts.push("Secure");
+  }
+
+  res.setHeader(
+    "Set-Cookie",
+    parts.join("; ")
+  );
+}
 
 // ============================================================
-// AUTH HELPERS
+// SESSION MANAGEMENT
+// ============================================================
+
+const SESSION_DURATION =
+  1000 * 60 * 60 * 24 * 30;
+
+function createSession(userId) {
+  const store =
+    readStore();
+
+  if (
+    !Array.isArray(
+      store.sessions
+    )
+  ) {
+    store.sessions = [];
+  }
+
+  const sessionId =
+    crypto.randomBytes(32)
+      .toString("hex");
+
+  const session = {
+    id: sessionId,
+
+    userId,
+
+    createdAt:
+      new Date().toISOString(),
+
+    expiresAt:
+      new Date(
+        Date.now() +
+          SESSION_DURATION
+      ).toISOString()
+  };
+
+  store.sessions.push(
+    session
+  );
+
+  // Remove expired sessions.
+  const now =
+    Date.now();
+
+  store.sessions =
+    store.sessions.filter(
+      item =>
+        new Date(
+          item.expiresAt
+        ).getTime() > now
+    );
+
+  if (!writeStore(store)) {
+    return null;
+  }
+
+  return session;
+}
+
+function getCurrentSession(req) {
+  const cookies =
+    parseCookies(req);
+
+  const sessionId =
+    cookies.ungpp_session;
+
+  if (!sessionId) {
+    return null;
+  }
+
+  const store =
+    readStore();
+
+  const session =
+    (
+      store.sessions || []
+    ).find(
+      item =>
+        item.id ===
+        sessionId
+    );
+
+  if (!session) {
+    return null;
+  }
+
+  if (
+    new Date(
+      session.expiresAt
+    ).getTime() <=
+    Date.now()
+  ) {
+    return null;
+  }
+
+  return session;
+}
+
+function getCurrentUser(req) {
+  const session =
+    getCurrentSession(req);
+
+  if (!session) {
+    return null;
+  }
+
+  const store =
+    readStore();
+
+  return (
+    store.users || []
+  ).find(
+    user =>
+      user.id ===
+      session.userId
+  ) || null;
+}
+
+// ============================================================
+// SAFE USER
 // ============================================================
 
 function safeUser(user) {
@@ -327,7 +420,9 @@ function safeUser(user) {
   }
 
   return {
-    id: user.id,
+    id:
+      user.id,
+
     fullName:
       user.fullName ||
       user.name ||
@@ -354,78 +449,344 @@ function safeUser(user) {
   };
 }
 
-function createUser(req, res) {
-  const body = req.body || {};
+// ============================================================
+// MIDDLEWARE
+// ============================================================
 
-  const fullName = String(
-    body.fullName ||
-    body.full_name ||
-    body.name ||
-    body.username ||
-    ""
-  ).trim();
+app.disable(
+  "x-powered-by"
+);
 
-  const email = String(
-    body.email ||
-    ""
-  ).trim().toLowerCase();
+app.use(
+  express.json({
+    limit: "5mb"
+  })
+);
 
-  const password = String(
-    body.password ||
-    ""
-  );
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: "5mb"
+  })
+);
 
-  const username = String(
-    body.username ||
-    ""
-  ).trim();
+// ============================================================
+// REQUEST LOGGING
+// ============================================================
+
+app.use(
+  (req, res, next) => {
+    const started =
+      Date.now();
+
+    res.on(
+      "finish",
+      () => {
+        const elapsed =
+          Date.now() -
+          started;
+
+        console.log(
+          `${req.method} ${req.originalUrl} ${res.statusCode} ${elapsed}ms`
+        );
+      }
+    );
+
+    next();
+  }
+);
+
+// ============================================================
+// HEALTH
+// ============================================================
+
+app.get(
+  "/health",
+  (req, res) => {
+    res.status(200).json({
+      ok: true,
+
+      status:
+        "online",
+
+      app:
+        "Ultra Next Gen Pro Predictor",
+
+      version:
+        "V1000",
+
+      environment:
+        NODE_ENV,
+
+      port:
+        PORT,
+
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
+
+// ============================================================
+// API ROOT
+// ============================================================
+
+app.get(
+  "/api",
+  (req, res) => {
+    res.json({
+      ok: true,
+
+      app:
+        "Ultra Next Gen Pro Predictor",
+
+      version:
+        "V1000",
+
+      message:
+        "API online"
+    });
+  }
+);
+
+// ============================================================
+// API STATUS
+// ============================================================
+
+app.get(
+  "/api/status",
+  (req, res) => {
+    res.json({
+      ok: true,
+
+      app:
+        "Ultra Next Gen Pro Predictor",
+
+      version:
+        "V1000",
+
+      providers: {
+        footballSoccer:
+          Boolean(
+            FOOTBALL_SOCCER_API_KEY
+          ),
+
+        footballData:
+          Boolean(
+            FOOTBALL_DATA_API_KEY
+          ),
+
+        apiFootball:
+          Boolean(
+            API_FOOTBALL_KEY
+          )
+      },
+
+      database:
+        Boolean(
+          DATABASE_URL
+        ),
+
+      localStore:
+        fs.existsSync(
+          STORE_FILE
+        ),
+
+      frontend:
+        fs.existsSync(
+          INDEX_FILE
+        ),
+
+      upcomingDays:
+        UPCOMING_DAYS,
+
+      syncIntervalMinutes:
+        SYNC_INTERVAL_MINUTES,
+
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
+
+// ============================================================
+// CONFIG STATUS
+// ============================================================
+
+app.get(
+  "/api/config/status",
+  (req, res) => {
+    res.json({
+      ok: true,
+
+      footballSoccer: {
+        configured:
+          Boolean(
+            FOOTBALL_SOCCER_API_KEY
+          ),
+
+        provider:
+          "Football Soccer API"
+      },
+
+      footballData: {
+        configured:
+          Boolean(
+            FOOTBALL_DATA_API_KEY
+          ),
+
+        provider:
+          "football-data.org"
+      },
+
+      apiFootball: {
+        configured:
+          Boolean(
+            API_FOOTBALL_KEY
+          ),
+
+        provider:
+          "API-Football"
+      },
+
+      database: {
+        configured:
+          Boolean(
+            DATABASE_URL
+          )
+      }
+    });
+  }
+);
+
+// ============================================================
+// AUTH - CURRENT USER
+// ============================================================
+
+app.get(
+  "/api/auth/me",
+  (req, res) => {
+    const user =
+      getCurrentUser(req);
+
+    if (!user) {
+      return res.json({
+        ok: true,
+
+        authenticated:
+          false,
+
+        user:
+          null
+      });
+    }
+
+    return res.json({
+      ok: true,
+
+      authenticated:
+        true,
+
+      user:
+        safeUser(user)
+    });
+  }
+);
+
+// ============================================================
+// AUTH - SIGNUP
+// ============================================================
+
+function createUser(
+  req,
+  res
+) {
+  const body =
+    req.body || {};
+
+  const fullName =
+    String(
+      body.fullName ||
+      body.full_name ||
+      body.name ||
+      body.username ||
+      ""
+    ).trim();
+
+  const email =
+    String(
+      body.email ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const password =
+    String(
+      body.password ||
+      ""
+    );
+
+  const username =
+    String(
+      body.username ||
+      ""
+    ).trim();
 
   if (!fullName) {
     return res.status(400).json({
       ok: false,
-      error: "Full name is required"
+
+      error:
+        "Full name is required"
     });
   }
 
   if (!email) {
     return res.status(400).json({
       ok: false,
-      error: "Email is required"
+
+      error:
+        "Email is required"
     });
   }
 
   if (!password) {
     return res.status(400).json({
       ok: false,
-      error: "Password is required"
+
+      error:
+        "Password is required"
     });
   }
 
   if (password.length < 6) {
     return res.status(400).json({
       ok: false,
+
       error:
         "Password must be at least 6 characters"
     });
   }
 
-  const store = readStore();
+  const store =
+    readStore();
 
-  if (!Array.isArray(store.users)) {
-    store.users = [];
-  }
-
-  const existingUser =
-    store.users.find(
+  const existing =
+    (
+      store.users || []
+    ).find(
       user =>
         String(
           user.email || ""
-        ).toLowerCase() === email
+        ).toLowerCase() ===
+        email
     );
 
-  if (existingUser) {
+  if (existing) {
     return res.status(409).json({
       ok: false,
+
       error:
         "An account with this email already exists"
     });
@@ -433,46 +794,73 @@ function createUser(req, res) {
 
   const user = {
     id:
-      `user-${Date.now()}-${Math.random()
-        .toString(36)
-        .slice(2, 8)}`,
+      `user-${Date.now()}-${crypto
+        .randomBytes(4)
+        .toString("hex")}`,
 
     fullName,
 
-    name: fullName,
+    name:
+      fullName,
 
     username:
       username ||
       fullName
         .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "")
+        .replace(
+          /[^a-z0-9]+/g,
+          ""
+        )
         .slice(0, 30),
 
     email,
 
-    // Compatibility with current V1000 local store.
-    // Do not expose this value in API responses.
     password,
 
     createdAt:
       new Date().toISOString()
   };
 
-  store.users.push(user);
+  store.users.push(
+    user
+  );
 
-  const saved = writeStore(store);
-
-  if (!saved) {
+  if (
+    !writeStore(store)
+  ) {
     return res.status(500).json({
       ok: false,
+
       error:
         "Could not save account"
     });
   }
 
+  const session =
+    createSession(
+      user.id
+    );
+
+  if (!session) {
+    return res.status(500).json({
+      ok: false,
+
+      error:
+        "Account created but session could not be created"
+    });
+  }
+
+  setSessionCookie(
+    res,
+    session.id
+  );
+
   return res.status(201).json({
     ok: true,
-    authenticated: true,
+
+    authenticated:
+      true,
+
     message:
       "Account created successfully",
 
@@ -481,59 +869,107 @@ function createUser(req, res) {
   });
 }
 
-function loginUser(req, res) {
-  const body = req.body || {};
+// ============================================================
+// AUTH - LOGIN
+// ============================================================
 
-  const email = String(
-    body.email ||
-    ""
-  ).trim().toLowerCase();
+function loginUser(
+  req,
+  res
+) {
+  const body =
+    req.body || {};
 
-  const password = String(
-    body.password ||
-    ""
-  );
+  const email =
+    String(
+      body.email ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const password =
+    String(
+      body.password ||
+      ""
+    );
 
   if (!email) {
     return res.status(400).json({
       ok: false,
-      error: "Email is required"
+
+      error:
+        "Email is required"
     });
   }
 
   if (!password) {
     return res.status(400).json({
       ok: false,
+
       error:
         "Password is required"
     });
   }
 
-  const store = readStore();
+  const store =
+    readStore();
 
   const user =
-    (store.users || []).find(
+    (
+      store.users || []
+    ).find(
       item =>
         String(
           item.email || ""
-        ).toLowerCase() === email &&
+        ).toLowerCase() ===
+          email &&
         String(
           item.password || ""
-        ) === password
+        ) ===
+          password
     );
 
   if (!user) {
     return res.status(401).json({
       ok: false,
-      authenticated: false,
+
+      authenticated:
+        false,
+
       error:
         "Invalid email or password"
     });
   }
 
+  const session =
+    createSession(
+      user.id
+    );
+
+  if (!session) {
+    return res.status(500).json({
+      ok: false,
+
+      authenticated:
+        false,
+
+      error:
+        "Login successful but session could not be created"
+    });
+  }
+
+  setSessionCookie(
+    res,
+    session.id
+  );
+
   return res.json({
     ok: true,
-    authenticated: true,
+
+    authenticated:
+      true,
+
     message:
       "Login successful",
 
@@ -543,33 +979,19 @@ function loginUser(req, res) {
 }
 
 // ============================================================
-// AUTH
+// AUTH ROUTES
 // ============================================================
 
-app.get(
-  "/api/auth/me",
-  (req, res) => {
-    res.json({
-      ok: true,
-      authenticated: false,
-      user: null
-    });
-  }
-);
-
-// Main V1000 authentication routes
 app.post(
   "/api/auth/signup",
   createUser
 );
 
 app.post(
-  "/api/auth/login",
-  loginUser
+  "/api/auth/register",
+  createUser
 );
 
-// Compatibility routes.
-// These handle frontends using the shorter names.
 app.post(
   "/api/signup",
   createUser
@@ -581,39 +1003,73 @@ app.post(
 );
 
 app.post(
-  "/api/login",
+  "/api/auth/login",
   loginUser
 );
 
 app.post(
-  "/api/auth/register",
-  createUser
+  "/api/login",
+  loginUser
 );
+
+// ============================================================
+// LOGOUT
+// ============================================================
+
+function logoutUser(
+  req,
+  res
+) {
+  const cookies =
+    parseCookies(req);
+
+  const sessionId =
+    cookies.ungpp_session;
+
+  if (sessionId) {
+    const store =
+      readStore();
+
+    store.sessions =
+      (
+        store.sessions ||
+        []
+      ).filter(
+        session =>
+          session.id !==
+          sessionId
+      );
+
+    writeStore(store);
+  }
+
+  clearSessionCookie(
+    res
+  );
+
+  return res.json({
+    ok: true,
+
+    authenticated:
+      false,
+
+    loggedOut:
+      true
+  });
+}
 
 app.post(
   "/api/auth/logout",
-  (req, res) => {
-    res.json({
-      ok: true,
-      authenticated: false,
-      loggedOut: true
-    });
-  }
+  logoutUser
 );
 
 app.post(
   "/api/logout",
-  (req, res) => {
-    res.json({
-      ok: true,
-      authenticated: false,
-      loggedOut: true
-    });
-  }
+  logoutUser
 );
 
 // ============================================================
-// MATCH DATA
+// MATCHES
 // ============================================================
 
 app.get(
@@ -621,8 +1077,12 @@ app.get(
   async (req, res) => {
     res.json({
       ok: true,
+
       matches: [],
-      source: "providers",
+
+      source:
+        "providers",
+
       timestamp:
         new Date().toISOString()
     });
@@ -634,7 +1094,9 @@ app.get(
   async (req, res) => {
     res.json({
       ok: true,
+
       fixtures: [],
+
       timestamp:
         new Date().toISOString()
     });
@@ -646,8 +1108,12 @@ app.get(
   async (req, res) => {
     res.json({
       ok: true,
+
       matches: [],
-      live: true,
+
+      live:
+        true,
+
       timestamp:
         new Date().toISOString()
     });
@@ -659,8 +1125,12 @@ app.get(
   async (req, res) => {
     res.json({
       ok: true,
+
       matches: [],
-      upcoming: true,
+
+      upcoming:
+        true,
+
       timestamp:
         new Date().toISOString()
     });
@@ -678,73 +1148,100 @@ app.get(
       ok: true,
 
       competitions: [
-
         {
-          id: "SA-PSL",
+          id:
+            "SA-PSL",
+
           name:
             "Betway Premiership",
+
           country:
             "South Africa",
+
           region:
             "South Africa"
         },
 
         {
-          id: "SA-NFD",
+          id:
+            "SA-NFD",
+
           name:
             "Motsepe Foundation Championship",
+
           country:
             "South Africa",
+
           region:
             "South Africa"
         },
 
         {
-          id: "SA-NEDBANK",
+          id:
+            "SA-NEDBANK",
+
           name:
             "Nedbank Cup",
+
           country:
             "South Africa",
+
           region:
             "South Africa"
         },
 
         {
-          id: "SA-CARLING",
+          id:
+            "SA-CARLING",
+
           name:
             "Carling Knockout Cup",
+
           country:
             "South Africa",
+
           region:
             "South Africa"
         },
 
         {
-          id: "CAF-CL",
+          id:
+            "CAF-CL",
+
           name:
             "CAF Champions League",
+
           country:
             "Africa",
+
           region:
             "Africa"
         },
 
         {
-          id: "CAF-CC",
+          id:
+            "CAF-CC",
+
           name:
             "CAF Confederation Cup",
+
           country:
             "Africa",
+
           region:
             "Africa"
         },
 
         {
-          id: "CAF-AFL",
+          id:
+            "CAF-AFL",
+
           name:
             "African Football League",
+
           country:
             "Africa",
+
           region:
             "Africa"
         }
@@ -768,9 +1265,13 @@ app.post(
       awayTeam
     } = req.body || {};
 
-    if (!homeTeam || !awayTeam) {
+    if (
+      !homeTeam ||
+      !awayTeam
+    ) {
       return res.status(400).json({
         ok: false,
+
         error:
           "homeTeam and awayTeam are required"
       });
@@ -814,7 +1315,8 @@ app.post(
         new Date().toISOString()
     };
 
-    const store = readStore();
+    const store =
+      readStore();
 
     store.predictions.push(
       prediction
@@ -824,7 +1326,9 @@ app.post(
 
     res.json({
       ok: true,
+
       prediction,
+
       timestamp:
         new Date().toISOString()
     });
@@ -843,6 +1347,7 @@ app.get(
 
     res.json({
       ok: true,
+
       slips:
         store.slips || []
     });
@@ -877,9 +1382,9 @@ app.post(
 
     const slip = {
       id:
-        `slip-${Date.now()}-${Math.random()
-          .toString(36)
-          .slice(2, 8)}`,
+        `slip-${Date.now()}-${crypto
+          .randomBytes(4)
+          .toString("hex")}`,
 
       name:
         name ||
@@ -909,12 +1414,12 @@ app.post(
       slip
     );
 
-    const saved =
-      writeStore(store);
-
-    if (!saved) {
+    if (
+      !writeStore(store)
+    ) {
       return res.status(500).json({
         ok: false,
+
         error:
           "Could not save slip"
       });
@@ -922,6 +1427,7 @@ app.post(
 
     res.status(201).json({
       ok: true,
+
       slip
     });
   }
@@ -945,6 +1451,7 @@ app.get(
     if (!slip) {
       return res.status(404).json({
         ok: false,
+
         error:
           "Slip not found"
       });
@@ -952,6 +1459,7 @@ app.get(
 
     res.json({
       ok: true,
+
       slip
     });
   }
@@ -973,12 +1481,12 @@ app.delete(
           req.params.id
       );
 
-    const saved =
-      writeStore(store);
-
-    if (!saved) {
+    if (
+      !writeStore(store)
+    ) {
       return res.status(500).json({
         ok: false,
+
         error:
           "Could not update slips"
       });
@@ -1146,7 +1654,6 @@ if (
 
 // ============================================================
 // API 404
-// IMPORTANT: MUST COME BEFORE SPA FALLBACK
 // ============================================================
 
 app.use(
@@ -1174,7 +1681,6 @@ app.use(
 app.get(
   "/*splat",
   (req, res) => {
-
     if (
       !fs.existsSync(
         INDEX_FILE
@@ -1185,12 +1691,14 @@ app.get(
         INDEX_FILE
       );
 
-      return res.status(500).send(`
-        <h1>Ultra Next Gen Pro Predictor</h1>
-        <p>Frontend file missing.</p>
-        <p>Expected:</p>
-        <code>public/index.html</code>
-      `);
+      return res
+        .status(500)
+        .send(`
+          <h1>Ultra Next Gen Pro Predictor</h1>
+          <p>Frontend file missing.</p>
+          <p>Expected:</p>
+          <code>public/index.html</code>
+        `);
     }
 
     return res.sendFile(
@@ -1204,7 +1712,12 @@ app.get(
 // ============================================================
 
 app.use(
-  (error, req, res, next) => {
+  (
+    error,
+    req,
+    res,
+    next
+  ) => {
     console.error(
       "Unhandled server error:",
       error
@@ -1218,6 +1731,7 @@ app.use(
 
     res.status(500).json({
       ok: false,
+
       error:
         "Internal server error"
     });
@@ -1232,7 +1746,6 @@ app.listen(
   PORT,
   HOST,
   () => {
-
     console.log(
       "=================================================="
     );
