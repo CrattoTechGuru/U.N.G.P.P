@@ -667,7 +667,7 @@ if (
 // SPA FALLBACK
 // ============================================================
 
-app.get("*", (req, res, next) => {
+app.get('/*splat', (req, res) => {
   if (
     req.path.startsWith(
       "/api/"
