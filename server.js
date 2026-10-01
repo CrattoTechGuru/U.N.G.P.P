@@ -26,6 +26,11 @@ const STORE_FILE = path.join(DATA_DIR, "store.json");
 
 const NODE_ENV = process.env.NODE_ENV || "production";
 
+// Current provider
+const FOOTBALL_SOCCER_API_KEY =
+  process.env.FOOTBALL_SOCCER_API_KEY || "";
+
+// Legacy provider variables retained for compatibility
 const FOOTBALL_DATA_API_KEY =
   process.env.FOOTBALL_DATA_API_KEY || "";
 
@@ -37,6 +42,12 @@ const DATABASE_URL =
 
 const ADMIN_KEY =
   process.env.ADMIN_KEY || "";
+
+const UPCOMING_DAYS =
+  Number(process.env.UPCOMING_DAYS) || 7;
+
+const SYNC_INTERVAL_MINUTES =
+  Number(process.env.SYNC_INTERVAL_MINUTES) || 30;
 
 // ============================================================
 // DIRECTORIES
@@ -63,16 +74,20 @@ ensureDirectory(DATA_DIR);
 // LOCAL STORE
 // ============================================================
 
+function defaultStore() {
+  return {
+    users: [],
+    slips: [],
+    predictions: [],
+    settings: {},
+    createdAt: new Date().toISOString()
+  };
+}
+
 function readStore() {
   try {
     if (!fs.existsSync(STORE_FILE)) {
-      const initial = {
-        users: [],
-        slips: [],
-        predictions: [],
-        settings: {},
-        createdAt: new Date().toISOString()
-      };
+      const initial = defaultStore();
 
       fs.writeFileSync(
         STORE_FILE,
@@ -89,32 +104,47 @@ function readStore() {
     );
 
     if (!raw.trim()) {
-      return {
-        users: [],
-        slips: [],
-        predictions: [],
-        settings: {}
-      };
+      return defaultStore();
     }
 
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+
+    return {
+      ...defaultStore(),
+      ...parsed,
+
+      users: Array.isArray(parsed.users)
+        ? parsed.users
+        : [],
+
+      slips: Array.isArray(parsed.slips)
+        ? parsed.slips
+        : [],
+
+      predictions: Array.isArray(parsed.predictions)
+        ? parsed.predictions
+        : [],
+
+      settings:
+        parsed.settings &&
+        typeof parsed.settings === "object"
+          ? parsed.settings
+          : {}
+    };
   } catch (error) {
     console.error(
       "Store read error:",
       error.message
     );
 
-    return {
-      users: [],
-      slips: [],
-      predictions: [],
-      settings: {}
-    };
+    return defaultStore();
   }
 }
 
 function writeStore(data) {
   try {
+    ensureDirectory(DATA_DIR);
+
     fs.writeFileSync(
       STORE_FILE,
       JSON.stringify(data, null, 2),
@@ -152,7 +182,7 @@ app.use(
 );
 
 // ============================================================
-// BASIC REQUEST LOGGING
+// REQUEST LOGGING
 // ============================================================
 
 app.use((req, res, next) => {
@@ -186,6 +216,19 @@ app.get("/health", (req, res) => {
 });
 
 // ============================================================
+// ROOT API
+// ============================================================
+
+app.get("/api", (req, res) => {
+  res.json({
+    ok: true,
+    app: "Ultra Next Gen Pro Predictor",
+    version: "V1000",
+    message: "API online"
+  });
+});
+
+// ============================================================
 // API STATUS
 // ============================================================
 
@@ -196,6 +239,10 @@ app.get("/api/status", (req, res) => {
     version: "V1000",
 
     providers: {
+      footballSoccer: Boolean(
+        FOOTBALL_SOCCER_API_KEY
+      ),
+
       footballData: Boolean(
         FOOTBALL_DATA_API_KEY
       ),
@@ -217,7 +264,13 @@ app.get("/api/status", (req, res) => {
       INDEX_FILE
     ),
 
-    timestamp: new Date().toISOString()
+    upcomingDays: UPCOMING_DAYS,
+
+    syncIntervalMinutes:
+      SYNC_INTERVAL_MINUTES,
+
+    timestamp:
+      new Date().toISOString()
   });
 });
 
@@ -225,428 +278,856 @@ app.get("/api/status", (req, res) => {
 // CONFIGURATION STATUS
 // ============================================================
 
-app.get("/api/config/status", (req, res) => {
-  res.json({
+app.get(
+  "/api/config/status",
+  (req, res) => {
+    res.json({
+      ok: true,
+
+      footballSoccer: {
+        configured: Boolean(
+          FOOTBALL_SOCCER_API_KEY
+        ),
+        provider:
+          "Football Soccer API"
+      },
+
+      footballData: {
+        configured: Boolean(
+          FOOTBALL_DATA_API_KEY
+        ),
+        provider:
+          "football-data.org"
+      },
+
+      apiFootball: {
+        configured: Boolean(
+          API_FOOTBALL_KEY
+        ),
+        provider:
+          "API-Football"
+      },
+
+      database: {
+        configured: Boolean(
+          DATABASE_URL
+        )
+      }
+    });
+  }
+);
+
+// ============================================================
+// AUTH HELPERS
+// ============================================================
+
+function safeUser(user) {
+  if (!user) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    fullName:
+      user.fullName ||
+      user.name ||
+      user.username ||
+      "",
+
+    name:
+      user.fullName ||
+      user.name ||
+      user.username ||
+      "",
+
+    username:
+      user.username ||
+      null,
+
+    email:
+      user.email ||
+      "",
+
+    createdAt:
+      user.createdAt ||
+      null
+  };
+}
+
+function createUser(req, res) {
+  const body = req.body || {};
+
+  const fullName = String(
+    body.fullName ||
+    body.full_name ||
+    body.name ||
+    body.username ||
+    ""
+  ).trim();
+
+  const email = String(
+    body.email ||
+    ""
+  ).trim().toLowerCase();
+
+  const password = String(
+    body.password ||
+    ""
+  );
+
+  const username = String(
+    body.username ||
+    ""
+  ).trim();
+
+  if (!fullName) {
+    return res.status(400).json({
+      ok: false,
+      error: "Full name is required"
+    });
+  }
+
+  if (!email) {
+    return res.status(400).json({
+      ok: false,
+      error: "Email is required"
+    });
+  }
+
+  if (!password) {
+    return res.status(400).json({
+      ok: false,
+      error: "Password is required"
+    });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        "Password must be at least 6 characters"
+    });
+  }
+
+  const store = readStore();
+
+  if (!Array.isArray(store.users)) {
+    store.users = [];
+  }
+
+  const existingUser =
+    store.users.find(
+      user =>
+        String(
+          user.email || ""
+        ).toLowerCase() === email
+    );
+
+  if (existingUser) {
+    return res.status(409).json({
+      ok: false,
+      error:
+        "An account with this email already exists"
+    });
+  }
+
+  const user = {
+    id:
+      `user-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
+
+    fullName,
+
+    name: fullName,
+
+    username:
+      username ||
+      fullName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "")
+        .slice(0, 30),
+
+    email,
+
+    // Compatibility with current V1000 local store.
+    // Do not expose this value in API responses.
+    password,
+
+    createdAt:
+      new Date().toISOString()
+  };
+
+  store.users.push(user);
+
+  const saved = writeStore(store);
+
+  if (!saved) {
+    return res.status(500).json({
+      ok: false,
+      error:
+        "Could not save account"
+    });
+  }
+
+  return res.status(201).json({
     ok: true,
+    authenticated: true,
+    message:
+      "Account created successfully",
 
-    footballData: {
-      configured: Boolean(
-        FOOTBALL_DATA_API_KEY
-      ),
-      provider: "football-data.org"
-    },
-
-    apiFootball: {
-      configured: Boolean(
-        API_FOOTBALL_KEY
-      ),
-      provider: "API-Football"
-    },
-
-    database: {
-      configured: Boolean(
-        DATABASE_URL
-      )
-    }
+    user:
+      safeUser(user)
   });
-});
+}
+
+function loginUser(req, res) {
+  const body = req.body || {};
+
+  const email = String(
+    body.email ||
+    ""
+  ).trim().toLowerCase();
+
+  const password = String(
+    body.password ||
+    ""
+  );
+
+  if (!email) {
+    return res.status(400).json({
+      ok: false,
+      error: "Email is required"
+    });
+  }
+
+  if (!password) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        "Password is required"
+    });
+  }
+
+  const store = readStore();
+
+  const user =
+    (store.users || []).find(
+      item =>
+        String(
+          item.email || ""
+        ).toLowerCase() === email &&
+        String(
+          item.password || ""
+        ) === password
+    );
+
+  if (!user) {
+    return res.status(401).json({
+      ok: false,
+      authenticated: false,
+      error:
+        "Invalid email or password"
+    });
+  }
+
+  return res.json({
+    ok: true,
+    authenticated: true,
+    message:
+      "Login successful",
+
+    user:
+      safeUser(user)
+  });
+}
 
 // ============================================================
 // AUTH
 // ============================================================
 
-app.get("/api/auth/me", (req, res) => {
-  res.json({
-    authenticated: false,
-    user: null
-  });
-});
-
-app.post("/api/auth/login", (req, res) => {
-  const {
-    email,
-    username
-  } = req.body || {};
-
-  if (!email && !username) {
-    return res.status(400).json({
-      ok: false,
-      error: "Email or username is required"
+app.get(
+  "/api/auth/me",
+  (req, res) => {
+    res.json({
+      ok: true,
+      authenticated: false,
+      user: null
     });
   }
+);
 
-  res.json({
-    ok: true,
-    authenticated: true,
-    user: {
-      id: `user-${Date.now()}`,
-      email: email || null,
-      username: username || null
-    }
-  });
-});
+// Main V1000 authentication routes
+app.post(
+  "/api/auth/signup",
+  createUser
+);
 
-app.post("/api/auth/signup", (req, res) => {
-  const {
-    email,
-    username
-  } = req.body || {};
+app.post(
+  "/api/auth/login",
+  loginUser
+);
 
-  if (!email && !username) {
-    return res.status(400).json({
-      ok: false,
-      error: "Email or username is required"
+// Compatibility routes.
+// These handle frontends using the shorter names.
+app.post(
+  "/api/signup",
+  createUser
+);
+
+app.post(
+  "/api/register",
+  createUser
+);
+
+app.post(
+  "/api/login",
+  loginUser
+);
+
+app.post(
+  "/api/auth/register",
+  createUser
+);
+
+app.post(
+  "/api/auth/logout",
+  (req, res) => {
+    res.json({
+      ok: true,
+      authenticated: false,
+      loggedOut: true
     });
   }
+);
 
-  const store = readStore();
-
-  const user = {
-    id: `user-${Date.now()}`,
-    email: email || null,
-    username: username || null,
-    createdAt: new Date().toISOString()
-  };
-
-  store.users.push(user);
-
-  writeStore(store);
-
-  res.status(201).json({
-    ok: true,
-    authenticated: true,
-    user
-  });
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  res.json({
-    ok: true,
-    authenticated: false,
-    loggedOut: true
-  });
-});
+app.post(
+  "/api/logout",
+  (req, res) => {
+    res.json({
+      ok: true,
+      authenticated: false,
+      loggedOut: true
+    });
+  }
+);
 
 // ============================================================
-// GENERIC MATCH DATA ENDPOINTS
+// MATCH DATA
 // ============================================================
 
-app.get("/api/matches", async (req, res) => {
-  res.json({
-    ok: true,
-    matches: [],
-    source: "providers",
-    timestamp: new Date().toISOString()
-  });
-});
+app.get(
+  "/api/matches",
+  async (req, res) => {
+    res.json({
+      ok: true,
+      matches: [],
+      source: "providers",
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
 
-app.get("/api/fixtures", async (req, res) => {
-  res.json({
-    ok: true,
-    fixtures: [],
-    timestamp: new Date().toISOString()
-  });
-});
+app.get(
+  "/api/fixtures",
+  async (req, res) => {
+    res.json({
+      ok: true,
+      fixtures: [],
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
 
-app.get("/api/live", async (req, res) => {
-  res.json({
-    ok: true,
-    matches: [],
-    live: true,
-    timestamp: new Date().toISOString()
-  });
-});
+app.get(
+  "/api/live",
+  async (req, res) => {
+    res.json({
+      ok: true,
+      matches: [],
+      live: true,
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
 
-app.get("/api/upcoming", async (req, res) => {
-  res.json({
-    ok: true,
-    matches: [],
-    upcoming: true,
-    timestamp: new Date().toISOString()
-  });
-});
+app.get(
+  "/api/upcoming",
+  async (req, res) => {
+    res.json({
+      ok: true,
+      matches: [],
+      upcoming: true,
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
 
 // ============================================================
 // COMPETITIONS
 // ============================================================
 
-app.get("/api/competitions", (req, res) => {
-  res.json({
-    ok: true,
+app.get(
+  "/api/competitions",
+  (req, res) => {
+    res.json({
+      ok: true,
 
-    competitions: [
-      {
-        id: "SA-PSL",
-        name: "Betway Premiership",
-        country: "South Africa",
-        region: "South Africa"
-      },
+      competitions: [
 
-      {
-        id: "SA-NFD",
-        name: "Motsepe Foundation Championship",
-        country: "South Africa",
-        region: "South Africa"
-      },
+        {
+          id: "SA-PSL",
+          name:
+            "Betway Premiership",
+          country:
+            "South Africa",
+          region:
+            "South Africa"
+        },
 
-      {
-        id: "SA-NEDBANK",
-        name: "Nedbank Cup",
-        country: "South Africa",
-        region: "South Africa"
-      },
+        {
+          id: "SA-NFD",
+          name:
+            "Motsepe Foundation Championship",
+          country:
+            "South Africa",
+          region:
+            "South Africa"
+        },
 
-      {
-        id: "SA-CARLING",
-        name: "Carling Knockout Cup",
-        country: "South Africa",
-        region: "South Africa"
-      },
+        {
+          id: "SA-NEDBANK",
+          name:
+            "Nedbank Cup",
+          country:
+            "South Africa",
+          region:
+            "South Africa"
+        },
 
-      {
-        id: "CAF-CL",
-        name: "CAF Champions League",
-        country: "Africa",
-        region: "Africa"
-      },
+        {
+          id: "SA-CARLING",
+          name:
+            "Carling Knockout Cup",
+          country:
+            "South Africa",
+          region:
+            "South Africa"
+        },
 
-      {
-        id: "CAF-CC",
-        name: "CAF Confederation Cup",
-        country: "Africa",
-        region: "Africa"
-      },
+        {
+          id: "CAF-CL",
+          name:
+            "CAF Champions League",
+          country:
+            "Africa",
+          region:
+            "Africa"
+        },
 
-      {
-        id: "CAF-AFL",
-        name: "African Football League",
-        country: "Africa",
-        region: "Africa"
-      }
-    ],
+        {
+          id: "CAF-CC",
+          name:
+            "CAF Confederation Cup",
+          country:
+            "Africa",
+          region:
+            "Africa"
+        },
 
-    timestamp: new Date().toISOString()
-  });
-});
+        {
+          id: "CAF-AFL",
+          name:
+            "African Football League",
+          country:
+            "Africa",
+          region:
+            "Africa"
+        }
+      ],
+
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
 
 // ============================================================
 // PREDICTIONS
 // ============================================================
 
-app.post("/api/predict", (req, res) => {
-  const {
-    homeTeam,
-    awayTeam
-  } = req.body || {};
-
-  if (!homeTeam || !awayTeam) {
-    return res.status(400).json({
-      ok: false,
-      error: "homeTeam and awayTeam are required"
-    });
-  }
-
-  res.json({
-    ok: true,
-
-    prediction: {
+app.post(
+  "/api/predict",
+  (req, res) => {
+    const {
       homeTeam,
+      awayTeam
+    } = req.body || {};
+
+    if (!homeTeam || !awayTeam) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          "homeTeam and awayTeam are required"
+      });
+    }
+
+    const prediction = {
+      id:
+        `prediction-${Date.now()}`,
+
+      homeTeam,
+
       awayTeam,
 
-      outcome: "PENDING",
+      outcome:
+        "PENDING",
 
-      confidence: 0,
+      confidence:
+        0,
+
+      accuracy:
+        0,
 
       markets: {
-        matchWinner: null,
-        doubleChance: null,
-        overUnder: null,
-        bothTeamsToScore: null
+        matchWinner:
+          null,
+
+        doubleChance:
+          null,
+
+        overUnder:
+          null,
+
+        bothTeamsToScore:
+          null
       },
 
       message:
-        "Prediction engine awaiting fixture data."
-    },
+        "Prediction engine awaiting fixture data.",
 
-    timestamp: new Date().toISOString()
-  });
-});
+      createdAt:
+        new Date().toISOString()
+    };
+
+    const store = readStore();
+
+    store.predictions.push(
+      prediction
+    );
+
+    writeStore(store);
+
+    res.json({
+      ok: true,
+      prediction,
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
 
 // ============================================================
 // MANUAL SLIPS
 // ============================================================
 
-app.get("/api/slips", (req, res) => {
-  const store = readStore();
+app.get(
+  "/api/slips",
+  (req, res) => {
+    const store =
+      readStore();
 
-  res.json({
-    ok: true,
-    slips: store.slips || []
-  });
-});
-
-app.post("/api/slips", (req, res) => {
-  const {
-    name,
-    selections,
-    stake
-  } = req.body || {};
-
-  const store = readStore();
-
-  const slip = {
-    id: `slip-${Date.now()}`,
-    name: name || "Manual Slip",
-    selections: Array.isArray(
-      selections
-    )
-      ? selections
-      : [],
-    stake: Number(stake) || 0,
-    createdAt: new Date().toISOString()
-  };
-
-  store.slips.push(slip);
-
-  writeStore(store);
-
-  res.status(201).json({
-    ok: true,
-    slip
-  });
-});
-
-app.get("/api/slips/:id", (req, res) => {
-  const store = readStore();
-
-  const slip = (
-    store.slips || []
-  ).find(
-    item => item.id === req.params.id
-  );
-
-  if (!slip) {
-    return res.status(404).json({
-      ok: false,
-      error: "Slip not found"
+    res.json({
+      ok: true,
+      slips:
+        store.slips || []
     });
   }
+);
 
-  res.json({
-    ok: true,
-    slip
-  });
-});
+app.post(
+  "/api/slips",
+  (req, res) => {
+    const {
+      name,
+      selections,
+      stake,
+      odds
+    } = req.body || {};
 
-app.delete("/api/slips/:id", (req, res) => {
-  const store = readStore();
+    const store =
+      readStore();
 
-  const before =
-    store.slips.length;
+    const cleanSelections =
+      Array.isArray(
+        selections
+      )
+        ? selections
+        : [];
 
-  store.slips =
-    store.slips.filter(
-      item =>
-        item.id !== req.params.id
+    const numericStake =
+      Number(stake) || 0;
+
+    const numericOdds =
+      Number(odds) || 0;
+
+    const slip = {
+      id:
+        `slip-${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2, 8)}`,
+
+      name:
+        name ||
+        "Manual Slip",
+
+      selections:
+        cleanSelections,
+
+      stake:
+        numericStake,
+
+      odds:
+        numericOdds,
+
+      potentialReturn:
+        numericStake > 0 &&
+        numericOdds > 0
+          ? numericStake *
+            numericOdds
+          : 0,
+
+      createdAt:
+        new Date().toISOString()
+    };
+
+    store.slips.push(
+      slip
     );
 
-  writeStore(store);
+    const saved =
+      writeStore(store);
 
-  res.json({
-    ok: true,
-    deleted:
-      before !==
-      store.slips.length
-  });
-});
+    if (!saved) {
+      return res.status(500).json({
+        ok: false,
+        error:
+          "Could not save slip"
+      });
+    }
+
+    res.status(201).json({
+      ok: true,
+      slip
+    });
+  }
+);
+
+app.get(
+  "/api/slips/:id",
+  (req, res) => {
+    const store =
+      readStore();
+
+    const slip =
+      (
+        store.slips || []
+      ).find(
+        item =>
+          item.id ===
+          req.params.id
+      );
+
+    if (!slip) {
+      return res.status(404).json({
+        ok: false,
+        error:
+          "Slip not found"
+      });
+    }
+
+    res.json({
+      ok: true,
+      slip
+    });
+  }
+);
+
+app.delete(
+  "/api/slips/:id",
+  (req, res) => {
+    const store =
+      readStore();
+
+    const before =
+      store.slips.length;
+
+    store.slips =
+      store.slips.filter(
+        item =>
+          item.id !==
+          req.params.id
+      );
+
+    const saved =
+      writeStore(store);
+
+    if (!saved) {
+      return res.status(500).json({
+        ok: false,
+        error:
+          "Could not update slips"
+      });
+    }
+
+    res.json({
+      ok: true,
+
+      deleted:
+        before !==
+        store.slips.length
+    });
+  }
+);
 
 // ============================================================
 // ANALYTICS
 // ============================================================
 
-app.get("/api/analytics", (req, res) => {
-  const store = readStore();
+app.get(
+  "/api/analytics",
+  (req, res) => {
+    const store =
+      readStore();
 
-  res.json({
-    ok: true,
+    res.json({
+      ok: true,
 
-    statistics: {
-      totalPredictions:
-        (store.predictions || []).length,
+      statistics: {
+        totalPredictions:
+          (
+            store.predictions ||
+            []
+          ).length,
 
-      totalSlips:
-        (store.slips || []).length,
+        totalSlips:
+          (
+            store.slips ||
+            []
+          ).length,
 
-      accuracy: 0
-    }
-  });
-});
+        totalUsers:
+          (
+            store.users ||
+            []
+          ).length,
+
+        accuracy:
+          0
+      }
+    });
+  }
+);
 
 // ============================================================
 // DIAGNOSTICS
 // ============================================================
 
-app.get("/api/diagnostics", (req, res) => {
-  res.json({
-    ok: true,
+app.get(
+  "/api/diagnostics",
+  (req, res) => {
+    res.json({
+      ok: true,
 
-    paths: {
-      root: ROOT_DIR,
-      public: PUBLIC_DIR,
-      index: INDEX_FILE,
-      data: DATA_DIR,
-      store: STORE_FILE
-    },
+      paths: {
+        root:
+          ROOT_DIR,
 
-    files: {
-      publicDirectory:
-        fs.existsSync(PUBLIC_DIR),
+        public:
+          PUBLIC_DIR,
 
-      index:
-        fs.existsSync(INDEX_FILE),
+        index:
+          INDEX_FILE,
 
-      dataDirectory:
-        fs.existsSync(DATA_DIR),
+        data:
+          DATA_DIR,
 
-      store:
-        fs.existsSync(STORE_FILE)
-    },
+        store:
+          STORE_FILE
+      },
 
-    providers: {
-      footballData:
+      files: {
+        publicDirectory:
+          fs.existsSync(
+            PUBLIC_DIR
+          ),
+
+        index:
+          fs.existsSync(
+            INDEX_FILE
+          ),
+
+        dataDirectory:
+          fs.existsSync(
+            DATA_DIR
+          ),
+
+        store:
+          fs.existsSync(
+            STORE_FILE
+          )
+      },
+
+      providers: {
+        footballSoccer:
+          Boolean(
+            FOOTBALL_SOCCER_API_KEY
+          ),
+
+        footballData:
+          Boolean(
+            FOOTBALL_DATA_API_KEY
+          ),
+
+        apiFootball:
+          Boolean(
+            API_FOOTBALL_KEY
+          )
+      },
+
+      database:
         Boolean(
-          FOOTBALL_DATA_API_KEY
+          DATABASE_URL
         ),
 
-      apiFootball:
-        Boolean(
-          API_FOOTBALL_KEY
-        )
-    }
-  });
-});
+      timestamp:
+        new Date().toISOString()
+    });
+  }
+);
 
 // ============================================================
 // FRONTEND
-//
-// THIS IS THE CRITICAL FIX.
-//
-// V1000:
-//     /public/index.html
-//
-// NOT:
-//     /src/public/index.html
 // ============================================================
 
 if (
-  fs.existsSync(PUBLIC_DIR)
+  fs.existsSync(
+    PUBLIC_DIR
+  )
 ) {
   app.use(
     express.static(
       PUBLIC_DIR,
       {
-        index: "index.html",
-        extensions: ["html"],
+        index:
+          "index.html",
+
+        extensions:
+          ["html"],
 
         maxAge:
           NODE_ENV ===
@@ -664,45 +1145,8 @@ if (
 }
 
 // ============================================================
-// SPA FALLBACK
-// ============================================================
-
-app.get('/*splat', (req, res) => {
-  if (
-    req.path.startsWith(
-      "/api/"
-    )
-  ) {
-    return next();
-  }
-
-  if (
-    !fs.existsSync(
-      INDEX_FILE
-    )
-  ) {
-    console.error(
-      "Frontend missing:",
-      INDEX_FILE
-    );
-
-    return res.status(500).send(
-      `
-      <h1>Ultra Next Gen Pro Predictor</h1>
-      <p>Frontend file missing.</p>
-      <p>Expected:</p>
-      <code>public/index.html</code>
-      `
-    );
-  }
-
-  res.sendFile(
-    INDEX_FILE
-  );
-});
-
-// ============================================================
 // API 404
+// IMPORTANT: MUST COME BEFORE SPA FALLBACK
 // ============================================================
 
 app.use(
@@ -710,11 +1154,48 @@ app.use(
   (req, res) => {
     res.status(404).json({
       ok: false,
+
       error:
         "API endpoint not found",
+
       path:
-        req.originalUrl
+        req.originalUrl,
+
+      method:
+        req.method
     });
+  }
+);
+
+// ============================================================
+// SPA FALLBACK
+// ============================================================
+
+app.get(
+  "/*splat",
+  (req, res) => {
+
+    if (
+      !fs.existsSync(
+        INDEX_FILE
+      )
+    ) {
+      console.error(
+        "Frontend missing:",
+        INDEX_FILE
+      );
+
+      return res.status(500).send(`
+        <h1>Ultra Next Gen Pro Predictor</h1>
+        <p>Frontend file missing.</p>
+        <p>Expected:</p>
+        <code>public/index.html</code>
+      `);
+    }
+
+    return res.sendFile(
+      INDEX_FILE
+    );
   }
 );
 
@@ -751,6 +1232,7 @@ app.listen(
   PORT,
   HOST,
   () => {
+
     console.log(
       "=================================================="
     );
@@ -786,6 +1268,12 @@ app.listen(
     );
 
     console.log(
+      `Football Soccer API configured: ${Boolean(
+        FOOTBALL_SOCCER_API_KEY
+      )}`
+    );
+
+    console.log(
       `Football-Data configured: ${Boolean(
         FOOTBALL_DATA_API_KEY
       )}`
@@ -801,6 +1289,14 @@ app.listen(
       `Database configured: ${Boolean(
         DATABASE_URL
       )}`
+    );
+
+    console.log(
+      `Upcoming days: ${UPCOMING_DAYS}`
+    );
+
+    console.log(
+      `Sync interval: ${SYNC_INTERVAL_MINUTES} minutes`
     );
 
     console.log(
