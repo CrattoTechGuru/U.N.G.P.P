@@ -1984,26 +1984,46 @@ app.use(
   })
 );
 
-/* ============================================================
-   SPA FALLBACK
-   ============================================================ */
+// ============================================================
+// FRONTEND / SPA FALLBACK
+// ============================================================
 
-app.get(
-  "/*splat",
-  (req, res) => {
-    if (
-      fs.existsSync(INDEX_FILE)
-    ) {
-      return res.sendFile(
-        INDEX_FILE
-      );
-    }
+app.get("/", (req, res) => {
+  res.sendFile(INDEX_FILE);
+});
 
-    res.status(404).send(
-      "Ultra Next Gen Pro Predictor frontend not found."
-    );
+app.get("*", (req, res) => {
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({
+      ok: false,
+      error: "API endpoint not found",
+      path: req.originalUrl,
+      method: req.method
+    });
   }
-);
+
+  res.sendFile(INDEX_FILE);
+});
+
+// ============================================================
+// START SERVER
+// ============================================================
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("============================================================");
+  console.log("Ultra Next Gen Pro Predictor");
+  console.log("V1000 SERVER ONLINE");
+  console.log(`Listening on http://0.0.0.0:${PORT}`);
+  console.log(`Root: ${ROOT_DIR}`);
+  console.log(`Public: ${PUBLIC_DIR}`);
+  console.log(`Index: ${INDEX_FILE}`);
+  console.log(`Frontend exists: ${fs.existsSync(INDEX_FILE)}`);
+  console.log(`Football Soccer API configured: ${Boolean(FOOTBALL_SOCCER_API_KEY)}`);
+  console.log(`Database configured: ${Boolean(DATABASE_URL)}`);
+  console.log(`Upcoming days: ${UPCOMING_DAYS}`);
+  console.log(`Sync interval: ${SYNC_INTERVAL_MINUTES} minutes`);
+  console.log("============================================================");
+});
 
 /* ============================================================
    ERROR HANDLER
