@@ -873,108 +873,109 @@ function createUser(
 // AUTH - LOGIN
 // ============================================================
 
-function loginUser(
-  req,
-  res
-) {
-  const body =
-    req.body || {};
+function loginUser(req, res) {
+  const body = req.body || {};
 
-  const email =
-    String(
-      body.email ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
+  // Accept all common field names used by the V1000 frontend.
+  const identifier = String(
+    body.email ||
+    body.username ||
+    body.identifier ||
+    body.login ||
+    ""
+  ).trim().toLowerCase();
 
-  const password =
-    String(
-      body.password ||
-      ""
-    );
+  const password = String(
+    body.password ||
+    body.passcode ||
+    body.pass ||
+    ""
+  );
 
-  if (!email) {
+  if (!identifier) {
     return res.status(400).json({
       ok: false,
-
-      error:
-        "Email is required"
+      authenticated: false,
+      error: "Email or username is required"
     });
   }
 
   if (!password) {
     return res.status(400).json({
       ok: false,
-
-      error:
-        "Password is required"
+      authenticated: false,
+      error: "Password is required"
     });
   }
 
-  const store =
-    readStore();
+  const store = readStore();
 
-  const user =
-    (
-      store.users || []
-    ).find(
-      item =>
-        String(
-          item.email || ""
-        ).toLowerCase() ===
-          email &&
-        String(
-          item.password || ""
-        ) ===
-          password
+  const users = Array.isArray(store.users)
+    ? store.users
+    : [];
+
+  const user = users.find(item => {
+    const userEmail = String(
+      item.email || ""
+    ).trim().toLowerCase();
+
+    const userUsername = String(
+      item.username || ""
+    ).trim().toLowerCase();
+
+    const userName = String(
+      item.name || item.fullName || ""
+    ).trim().toLowerCase();
+
+    const storedPassword = String(
+      item.password || ""
     );
+
+    const identifierMatches =
+      identifier === userEmail ||
+      identifier === userUsername ||
+      identifier === userName;
+
+    return (
+      identifierMatches &&
+      storedPassword === password
+    );
+  });
 
   if (!user) {
+    console.log(
+      `Login rejected for identifier: ${identifier}`
+    );
+
     return res.status(401).json({
       ok: false,
-
-      authenticated:
-        false,
-
-      error:
-        "Invalid email or password"
+      authenticated: false,
+      error: "Invalid email/username or password"
     });
   }
 
-  const session =
-    createSession(
-      user.id
-    );
+  const session = createSession(user.id);
 
   if (!session) {
     return res.status(500).json({
       ok: false,
-
-      authenticated:
-        false,
-
+      authenticated: false,
       error:
         "Login successful but session could not be created"
     });
   }
 
-  setSessionCookie(
-    res,
-    session.id
+  setSessionCookie(res, session.id);
+
+  console.log(
+    `Login successful for user: ${user.email || user.username}`
   );
 
   return res.json({
     ok: true,
-
-    authenticated:
-      true,
-
-    message:
-      "Login successful",
-
-    user:
-      safeUser(user)
+    authenticated: true,
+    message: "Login successful",
+    user: safeUser(user)
   });
 }
 
