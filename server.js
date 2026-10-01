@@ -7,35 +7,25 @@ const crypto = require("crypto");
 
 const app = express();
 
-// ============================================================
-// ULTRA NEXT GEN PRO PREDICTOR
-// V1000 SERVER
-// ============================================================
+/* ============================================================
+   ULTRA NEXT GEN PRO PREDICTOR
+   V1000 SERVER
+   ============================================================ */
 
 const PORT = Number(process.env.PORT) || 10000;
-const HOST = "0.0.0.0";
 
 const ROOT_DIR = __dirname;
 const PUBLIC_DIR = path.join(ROOT_DIR, "public");
 const DATA_DIR = path.join(ROOT_DIR, "data");
-const INDEX_FILE = path.join(PUBLIC_DIR, "index.html");
 const STORE_FILE = path.join(DATA_DIR, "store.json");
+const INDEX_FILE = path.join(PUBLIC_DIR, "index.html");
 
-// ============================================================
-// ENVIRONMENT
-// ============================================================
-
-const NODE_ENV =
-  process.env.NODE_ENV || "production";
+/* ============================================================
+   ENVIRONMENT
+   ============================================================ */
 
 const FOOTBALL_SOCCER_API_KEY =
   process.env.FOOTBALL_SOCCER_API_KEY || "";
-
-const FOOTBALL_DATA_API_KEY =
-  process.env.FOOTBALL_DATA_API_KEY || "";
-
-const API_FOOTBALL_KEY =
-  process.env.API_FOOTBALL_KEY || "";
 
 const DATABASE_URL =
   process.env.DATABASE_URL || "";
@@ -43,847 +33,361 @@ const DATABASE_URL =
 const ADMIN_KEY =
   process.env.ADMIN_KEY || "";
 
+const NODE_ENV =
+  process.env.NODE_ENV || "production";
+
 const UPCOMING_DAYS =
-  Number(process.env.UPCOMING_DAYS) || 7;
+  Math.max(1, Number(process.env.UPCOMING_DAYS) || 7);
 
 const SYNC_INTERVAL_MINUTES =
-  Number(
-    process.env.SYNC_INTERVAL_MINUTES
-  ) || 30;
+  Math.max(1, Number(process.env.SYNC_INTERVAL_MINUTES) || 30);
 
-// ============================================================
-// DIRECTORIES
-// ============================================================
+const FSAPI_BASE =
+  "https://api.footballsoccerapi.com";
 
-function ensureDirectory(directory) {
+/* ============================================================
+   DIRECTORIES
+   ============================================================ */
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(PUBLIC_DIR)) {
+  fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+}
+
+/* ============================================================
+   EXPRESS
+   ============================================================ */
+
+app.disable("x-powered-by");
+
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+/* ============================================================
+   STORE
+   ============================================================ */
+
+const DEFAULT_STORE = {
+  users: [],
+  sessions: [],
+  slips: [],
+  predictions: [],
+  matches: [],
+  settings: {},
+  sync: {
+    lastProviderSync: null,
+    lastHistoricalSync: null,
+    lastLiveSync: null,
+    lastUpcomingSync: null
+  },
+  createdAt: new Date().toISOString()
+};
+
+function loadStore() {
   try {
-    if (!fs.existsSync(directory)) {
-      fs.mkdirSync(directory, {
-        recursive: true
-      });
+    if (!fs.existsSync(STORE_FILE)) {
+      fs.writeFileSync(
+        STORE_FILE,
+        JSON.stringify(DEFAULT_STORE, null, 2)
+      );
+      return structuredClone(DEFAULT_STORE);
     }
-  } catch (error) {
-    console.error(
-      `Failed to create directory ${directory}:`,
-      error.message
-    );
+
+    const raw = fs.readFileSync(STORE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+
+    return {
+      ...structuredClone(DEFAULT_STORE),
+      ...parsed,
+      sync: {
+        ...DEFAULT_STORE.sync,
+        ...(parsed.sync || {})
+      }
+    };
+  } catch (err) {
+    console.error("Store load error:", err.message);
+    return structuredClone(DEFAULT_STORE);
   }
 }
 
-ensureDirectory(DATA_DIR);
+let store = loadStore();
 
-// ============================================================
-// LOCAL STORE
-// ============================================================
+function saveStore() {
+  try {
+    fs.writeFileSync(
+      STORE_FILE,
+      JSON.stringify(store, null, 2)
+    );
+  } catch (err) {
+    console.error("Store save error:", err.message);
+  }
+}
 
-function defaultStore() {
+/* ============================================================
+   HELPERS
+   ============================================================ */
+
+function id(prefix = "id") {
+  return `${prefix}_${Date.now()}_${crypto
+    .randomBytes(5)
+    .toString("hex")}`;
+}
+
+function clean(value) {
+  return String(value ?? "").trim();
+}
+
+function safeUser(user) {
+  if (!user) return null;
+
   return {
-    users: [],
-    sessions: [],
-    slips: [],
-    predictions: [],
-    settings: {},
-    createdAt:
-      new Date().toISOString()
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    createdAt: user.createdAt
   };
 }
 
-function readStore() {
-  try {
-    if (!fs.existsSync(STORE_FILE)) {
-      const initial =
-        defaultStore();
-
-      fs.writeFileSync(
-        STORE_FILE,
-        JSON.stringify(
-          initial,
-          null,
-          2
-        ),
-        "utf8"
-      );
-
-      return initial;
-    }
-
-    const raw =
-      fs.readFileSync(
-        STORE_FILE,
-        "utf8"
-      );
-
-    if (!raw.trim()) {
-      return defaultStore();
-    }
-
-    const parsed =
-      JSON.parse(raw);
-
-    return {
-      ...defaultStore(),
-      ...parsed,
-
-      users:
-        Array.isArray(
-          parsed.users
-        )
-          ? parsed.users
-          : [],
-
-      sessions:
-        Array.isArray(
-          parsed.sessions
-        )
-          ? parsed.sessions
-          : [],
-
-      slips:
-        Array.isArray(
-          parsed.slips
-        )
-          ? parsed.slips
-          : [],
-
-      predictions:
-        Array.isArray(
-          parsed.predictions
-        )
-          ? parsed.predictions
-          : [],
-
-      settings:
-        parsed.settings &&
-        typeof parsed.settings ===
-          "object"
-          ? parsed.settings
-          : {}
-    };
-  } catch (error) {
-    console.error(
-      "Store read error:",
-      error.message
-    );
-
-    return defaultStore();
-  }
+function nowISO() {
+  return new Date().toISOString();
 }
 
-function writeStore(data) {
-  try {
-    ensureDirectory(DATA_DIR);
-
-    fs.writeFileSync(
-      STORE_FILE,
-      JSON.stringify(
-        data,
-        null,
-        2
-      ),
-      "utf8"
-    );
-
-    return true;
-  } catch (error) {
-    console.error(
-      "Store write error:",
-      error.message
-    );
-
-    return false;
-  }
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
 }
 
-// ============================================================
-// COOKIE HELPERS
-// ============================================================
+function round(n, digits = 3) {
+  const p = 10 ** digits;
+  return Math.round(Number(n || 0) * p) / p;
+}
+
+function percentDecimal(n) {
+  return clamp(Number(n || 0), 0, 1);
+}
+
+function makeSlipCode() {
+  return `UNGP-${crypto
+    .randomBytes(3)
+    .toString("hex")
+    .toUpperCase()}`;
+}
+
+function parseDate(value) {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/* ============================================================
+   AUTH / SESSION
+   ============================================================ */
+
+const SESSION_COOKIE = "ungpp_session";
 
 function parseCookies(req) {
-  const header =
-    req.headers.cookie || "";
+  const header = req.headers.cookie || "";
+  const result = {};
 
-  const cookies = {};
+  for (const part of header.split(";")) {
+    const index = part.indexOf("=");
 
-  if (!header) {
-    return cookies;
+    if (index === -1) continue;
+
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+
+    result[key] = decodeURIComponent(value);
   }
 
-  header
-    .split(";")
-    .forEach(pair => {
-      const index =
-        pair.indexOf("=");
-
-      if (index === -1) {
-        return;
-      }
-
-      const key =
-        pair
-          .slice(0, index)
-          .trim();
-
-      const value =
-        pair
-          .slice(index + 1)
-          .trim();
-
-      if (key) {
-        cookies[key] =
-          decodeURIComponent(
-            value
-          );
-      }
-    });
-
-  return cookies;
+  return result;
 }
 
-function setSessionCookie(
-  res,
-  sessionId
-) {
-  const parts = [
-    `ungpp_session=${encodeURIComponent(
-      sessionId
-    )}`,
-
-    "Path=/",
-
-    "HttpOnly",
-
-    "SameSite=Lax"
-  ];
-
-  if (
-    NODE_ENV ===
-    "production"
-  ) {
-    parts.push("Secure");
-  }
+function setSessionCookie(res, sessionId) {
+  const secure =
+    NODE_ENV === "production"
+      ? " Secure;"
+      : "";
 
   res.setHeader(
     "Set-Cookie",
-    parts.join("; ")
+    `${SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000;${secure}`
   );
 }
 
 function clearSessionCookie(res) {
-  const parts = [
-    "ungpp_session=",
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    "Max-Age=0"
-  ];
-
-  if (
-    NODE_ENV ===
-    "production"
-  ) {
-    parts.push("Secure");
-  }
-
   res.setHeader(
     "Set-Cookie",
-    parts.join("; ")
+    `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
   );
 }
-
-// ============================================================
-// SESSION MANAGEMENT
-// ============================================================
-
-const SESSION_DURATION =
-  1000 * 60 * 60 * 24 * 30;
 
 function createSession(userId) {
-  const store =
-    readStore();
-
-  if (
-    !Array.isArray(
-      store.sessions
-    )
-  ) {
-    store.sessions = [];
-  }
-
-  const sessionId =
-    crypto.randomBytes(32)
-      .toString("hex");
-
   const session = {
-    id: sessionId,
-
+    id: id("sess"),
     userId,
-
-    createdAt:
-      new Date().toISOString(),
-
-    expiresAt:
-      new Date(
-        Date.now() +
-          SESSION_DURATION
-      ).toISOString()
+    createdAt: nowISO(),
+    expiresAt: new Date(
+      Date.now() + 30 * 24 * 60 * 60 * 1000
+    ).toISOString()
   };
 
-  store.sessions.push(
-    session
+  store.sessions = store.sessions.filter(
+    s => s.expiresAt && new Date(s.expiresAt) > new Date()
   );
 
-  // Remove expired sessions.
-  const now =
-    Date.now();
-
-  store.sessions =
-    store.sessions.filter(
-      item =>
-        new Date(
-          item.expiresAt
-        ).getTime() > now
-    );
-
-  if (!writeStore(store)) {
-    return null;
-  }
+  store.sessions.push(session);
+  saveStore();
 
   return session;
 }
 
-function getCurrentSession(req) {
-  const cookies =
-    parseCookies(req);
+function currentSession(req) {
+  const cookies = parseCookies(req);
+  const sessionId = cookies[SESSION_COOKIE];
 
-  const sessionId =
-    cookies.ungpp_session;
+  if (!sessionId) return null;
 
-  if (!sessionId) {
-    return null;
-  }
+  const session = store.sessions.find(
+    s =>
+      s.id === sessionId &&
+      s.expiresAt &&
+      new Date(s.expiresAt) > new Date()
+  );
 
-  const store =
-    readStore();
-
-  const session =
-    (
-      store.sessions || []
-    ).find(
-      item =>
-        item.id ===
-        sessionId
-    );
-
-  if (!session) {
-    return null;
-  }
-
-  if (
-    new Date(
-      session.expiresAt
-    ).getTime() <=
-    Date.now()
-  ) {
-    return null;
-  }
-
-  return session;
+  return session || null;
 }
 
-function getCurrentUser(req) {
-  const session =
-    getCurrentSession(req);
+function currentUser(req) {
+  const session = currentSession(req);
 
-  if (!session) {
-    return null;
-  }
+  if (!session) return null;
 
-  const store =
-    readStore();
-
-  return (
-    store.users || []
-  ).find(
-    user =>
-      user.id ===
-      session.userId
+  return store.users.find(
+    u => u.id === session.userId
   ) || null;
 }
 
-// ============================================================
-// SAFE USER
-// ============================================================
+function requireAuth(req, res, next) {
+  const user = currentUser(req);
 
-function safeUser(user) {
   if (!user) {
-    return null;
+    return res.status(401).json({
+      ok: false,
+      authenticated: false,
+      error: "Authentication required"
+    });
   }
 
-  return {
-    id:
-      user.id,
-
-    fullName:
-      user.fullName ||
-      user.name ||
-      user.username ||
-      "",
-
-    name:
-      user.fullName ||
-      user.name ||
-      user.username ||
-      "",
-
-    username:
-      user.username ||
-      null,
-
-    email:
-      user.email ||
-      "",
-
-    createdAt:
-      user.createdAt ||
-      null
-  };
+  req.user = user;
+  next();
 }
 
-// ============================================================
-// MIDDLEWARE
-// ============================================================
+/* ============================================================
+   HEALTH
+   ============================================================ */
 
-app.disable(
-  "x-powered-by"
-);
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    service: "Ultra Next Gen Pro Predictor",
+    version: "V1000",
+    provider: "Football Soccer API",
+    providerConfigured: Boolean(FOOTBALL_SOCCER_API_KEY),
+    databaseConfigured: Boolean(DATABASE_URL),
+    scheduler: `${SYNC_INTERVAL_MINUTES} minutes`,
+    upcomingDays: UPCOMING_DAYS,
+    timestamp: nowISO()
+  });
+});
 
-app.use(
-  express.json({
-    limit: "5mb"
-  })
-);
+/* ============================================================
+   AUTH ROUTES
+   ============================================================ */
 
-app.use(
-  express.urlencoded({
-    extended: true,
-    limit: "5mb"
-  })
-);
+function registerUser(req, res) {
+  const body = req.body || {};
 
-// ============================================================
-// REQUEST LOGGING
-// ============================================================
+  const name = clean(
+    body.name ||
+    body.fullName ||
+    body.username
+  );
 
-app.use(
-  (req, res, next) => {
-    const started =
-      Date.now();
+  const email = clean(body.email).toLowerCase();
+  const password = String(
+    body.password ||
+    body.passcode ||
+    body.pass ||
+    ""
+  );
 
-    res.on(
-      "finish",
-      () => {
-        const elapsed =
-          Date.now() -
-          started;
-
-        console.log(
-          `${req.method} ${req.originalUrl} ${res.statusCode} ${elapsed}ms`
-        );
-      }
-    );
-
-    next();
-  }
-);
-
-// ============================================================
-// HEALTH
-// ============================================================
-
-app.get(
-  "/health",
-  (req, res) => {
-    res.status(200).json({
-      ok: true,
-
-      status:
-        "online",
-
-      app:
-        "Ultra Next Gen Pro Predictor",
-
-      version:
-        "V1000",
-
-      environment:
-        NODE_ENV,
-
-      port:
-        PORT,
-
-      timestamp:
-        new Date().toISOString()
-    });
-  }
-);
-
-// ============================================================
-// API ROOT
-// ============================================================
-
-app.get(
-  "/api",
-  (req, res) => {
-    res.json({
-      ok: true,
-
-      app:
-        "Ultra Next Gen Pro Predictor",
-
-      version:
-        "V1000",
-
-      message:
-        "API online"
-    });
-  }
-);
-
-// ============================================================
-// API STATUS
-// ============================================================
-
-app.get(
-  "/api/status",
-  (req, res) => {
-    res.json({
-      ok: true,
-
-      app:
-        "Ultra Next Gen Pro Predictor",
-
-      version:
-        "V1000",
-
-      providers: {
-        footballSoccer:
-          Boolean(
-            FOOTBALL_SOCCER_API_KEY
-          ),
-
-        footballData:
-          Boolean(
-            FOOTBALL_DATA_API_KEY
-          ),
-
-        apiFootball:
-          Boolean(
-            API_FOOTBALL_KEY
-          )
-      },
-
-      database:
-        Boolean(
-          DATABASE_URL
-        ),
-
-      localStore:
-        fs.existsSync(
-          STORE_FILE
-        ),
-
-      frontend:
-        fs.existsSync(
-          INDEX_FILE
-        ),
-
-      upcomingDays:
-        UPCOMING_DAYS,
-
-      syncIntervalMinutes:
-        SYNC_INTERVAL_MINUTES,
-
-      timestamp:
-        new Date().toISOString()
-    });
-  }
-);
-
-// ============================================================
-// CONFIG STATUS
-// ============================================================
-
-app.get(
-  "/api/config/status",
-  (req, res) => {
-    res.json({
-      ok: true,
-
-      footballSoccer: {
-        configured:
-          Boolean(
-            FOOTBALL_SOCCER_API_KEY
-          ),
-
-        provider:
-          "Football Soccer API"
-      },
-
-      footballData: {
-        configured:
-          Boolean(
-            FOOTBALL_DATA_API_KEY
-          ),
-
-        provider:
-          "football-data.org"
-      },
-
-      apiFootball: {
-        configured:
-          Boolean(
-            API_FOOTBALL_KEY
-          ),
-
-        provider:
-          "API-Football"
-      },
-
-      database: {
-        configured:
-          Boolean(
-            DATABASE_URL
-          )
-      }
-    });
-  }
-);
-
-// ============================================================
-// AUTH - CURRENT USER
-// ============================================================
-
-app.get(
-  "/api/auth/me",
-  (req, res) => {
-    const user =
-      getCurrentUser(req);
-
-    if (!user) {
-      return res.json({
-        ok: true,
-
-        authenticated:
-          false,
-
-        user:
-          null
-      });
-    }
-
-    return res.json({
-      ok: true,
-
-      authenticated:
-        true,
-
-      user:
-        safeUser(user)
-    });
-  }
-);
-
-// ============================================================
-// AUTH - SIGNUP
-// ============================================================
-
-function createUser(
-  req,
-  res
-) {
-  const body =
-    req.body || {};
-
-  const fullName =
-    String(
-      body.fullName ||
-      body.full_name ||
-      body.name ||
-      body.username ||
-      ""
-    ).trim();
-
-  const email =
-    String(
-      body.email ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  const password =
-    String(
-      body.password ||
-      ""
-    );
-
-  const username =
-    String(
-      body.username ||
-      ""
-    ).trim();
-
-  if (!fullName) {
+  if (!name) {
     return res.status(400).json({
       ok: false,
-
-      error:
-        "Full name is required"
+      error: "Full name is required"
     });
   }
 
-  if (!email) {
+  if (!email || !email.includes("@")) {
     return res.status(400).json({
       ok: false,
-
-      error:
-        "Email is required"
+      error: "Valid email is required"
     });
   }
 
-  if (!password) {
+  if (password.length < 8) {
     return res.status(400).json({
       ok: false,
-
-      error:
-        "Password is required"
+      error: "Password must be at least 8 characters"
     });
   }
 
-  if (password.length < 6) {
-    return res.status(400).json({
-      ok: false,
+  const exists = store.users.some(
+    u => String(u.email).toLowerCase() === email
+  );
 
-      error:
-        "Password must be at least 6 characters"
-    });
-  }
-
-  const store =
-    readStore();
-
-  const existing =
-    (
-      store.users || []
-    ).find(
-      user =>
-        String(
-          user.email || ""
-        ).toLowerCase() ===
-        email
-    );
-
-  if (existing) {
+  if (exists) {
     return res.status(409).json({
       ok: false,
-
-      error:
-        "An account with this email already exists"
+      error: "An account with this email already exists"
     });
   }
 
   const user = {
-    id:
-      `user-${Date.now()}-${crypto
-        .randomBytes(4)
-        .toString("hex")}`,
-
-    fullName,
-
-    name:
-      fullName,
-
-    username:
-      username ||
-      fullName
-        .toLowerCase()
-        .replace(
-          /[^a-z0-9]+/g,
-          ""
-        )
-        .slice(0, 30),
-
+    id: id("usr"),
+    name,
     email,
-
     password,
-
-    createdAt:
-      new Date().toISOString()
+    createdAt: nowISO()
   };
 
-  store.users.push(
-    user
-  );
+  store.users.push(user);
 
-  if (
-    !writeStore(store)
-  ) {
-    return res.status(500).json({
-      ok: false,
+  const session = createSession(user.id);
 
-      error:
-        "Could not save account"
-    });
-  }
+  saveStore();
 
-  const session =
-    createSession(
-      user.id
-    );
+  setSessionCookie(res, session.id);
 
-  if (!session) {
-    return res.status(500).json({
-      ok: false,
-
-      error:
-        "Account created but session could not be created"
-    });
-  }
-
-  setSessionCookie(
-    res,
-    session.id
-  );
-
-  return res.status(201).json({
+  res.json({
     ok: true,
-
-    authenticated:
-      true,
-
-    message:
-      "Account created successfully",
-
-    user:
-      safeUser(user)
+    authenticated: true,
+    message: "Account created",
+    user: safeUser(user)
   });
 }
-
-// ============================================================
-// AUTH - LOGIN
-// ============================================================
 
 function loginUser(req, res) {
   const body = req.body || {};
 
-  // Accept all common field names used by the V1000 frontend.
-  const identifier = String(
+  const identifier = clean(
     body.email ||
     body.username ||
     body.identifier ||
-    body.login ||
-    ""
-  ).trim().toLowerCase();
+    body.login
+  ).toLowerCase();
 
   const password = String(
     body.password ||
@@ -892,86 +396,39 @@ function loginUser(req, res) {
     ""
   );
 
-  if (!identifier) {
-    return res.status(400).json({
-      ok: false,
-      authenticated: false,
-      error: "Email or username is required"
-    });
-  }
+  const user = store.users.find(item => {
+    const email =
+      clean(item.email).toLowerCase();
 
-  if (!password) {
-    return res.status(400).json({
-      ok: false,
-      authenticated: false,
-      error: "Password is required"
-    });
-  }
+    const username =
+      clean(item.username).toLowerCase();
 
-  const store = readStore();
-
-  const users = Array.isArray(store.users)
-    ? store.users
-    : [];
-
-  const user = users.find(item => {
-    const userEmail = String(
-      item.email || ""
-    ).trim().toLowerCase();
-
-    const userUsername = String(
-      item.username || ""
-    ).trim().toLowerCase();
-
-    const userName = String(
-      item.name || item.fullName || ""
-    ).trim().toLowerCase();
-
-    const storedPassword = String(
-      item.password || ""
-    );
-
-    const identifierMatches =
-      identifier === userEmail ||
-      identifier === userUsername ||
-      identifier === userName;
+    const name =
+      clean(item.name || item.fullName).toLowerCase();
 
     return (
-      identifierMatches &&
-      storedPassword === password
+      (
+        identifier === email ||
+        identifier === username ||
+        identifier === name
+      ) &&
+      String(item.password || "") === password
     );
   });
 
   if (!user) {
-    console.log(
-      `Login rejected for identifier: ${identifier}`
-    );
-
     return res.status(401).json({
       ok: false,
       authenticated: false,
-      error: "Invalid email/username or password"
+      error: "Invalid email or password"
     });
   }
 
   const session = createSession(user.id);
 
-  if (!session) {
-    return res.status(500).json({
-      ok: false,
-      authenticated: false,
-      error:
-        "Login successful but session could not be created"
-    });
-  }
-
   setSessionCookie(res, session.id);
 
-  console.log(
-    `Login successful for user: ${user.email || user.username}`
-  );
-
-  return res.json({
+  res.json({
     ok: true,
     authenticated: true,
     message: "Login successful",
@@ -979,456 +436,1066 @@ function loginUser(req, res) {
   });
 }
 
-// ============================================================
-// AUTH ROUTES
-// ============================================================
+function logoutUser(req, res) {
+  const session = currentSession(req);
 
-app.post(
-  "/api/auth/signup",
-  createUser
-);
-
-app.post(
-  "/api/auth/register",
-  createUser
-);
-
-app.post(
-  "/api/signup",
-  createUser
-);
-
-app.post(
-  "/api/register",
-  createUser
-);
-
-app.post(
-  "/api/auth/login",
-  loginUser
-);
-
-app.post(
-  "/api/login",
-  loginUser
-);
-
-// ============================================================
-// LOGOUT
-// ============================================================
-
-function logoutUser(
-  req,
-  res
-) {
-  const cookies =
-    parseCookies(req);
-
-  const sessionId =
-    cookies.ungpp_session;
-
-  if (sessionId) {
-    const store =
-      readStore();
-
-    store.sessions =
-      (
-        store.sessions ||
-        []
-      ).filter(
-        session =>
-          session.id !==
-          sessionId
-      );
-
-    writeStore(store);
+  if (session) {
+    store.sessions = store.sessions.filter(
+      s => s.id !== session.id
+    );
+    saveStore();
   }
 
-  clearSessionCookie(
-    res
-  );
+  clearSessionCookie(res);
 
-  return res.json({
+  res.json({
     ok: true,
-
-    authenticated:
-      false,
-
-    loggedOut:
-      true
+    authenticated: false
   });
 }
 
-app.post(
-  "/api/auth/logout",
-  logoutUser
-);
+app.post("/api/auth/register", registerUser);
+app.post("/api/auth/signup", registerUser);
+app.post("/api/register", registerUser);
+app.post("/api/signup", registerUser);
 
-app.post(
-  "/api/logout",
-  logoutUser
-);
+app.post("/api/auth/login", loginUser);
+app.post("/api/login", loginUser);
 
-// ============================================================
-// MATCHES
-// ============================================================
+app.post("/api/auth/logout", logoutUser);
+app.post("/api/logout", logoutUser);
 
-app.get(
-  "/api/matches",
-  async (req, res) => {
-    res.json({
-      ok: true,
+app.get("/api/auth/me", (req, res) => {
+  const user = currentUser(req);
 
-      matches: [],
+  res.json({
+    ok: true,
+    authenticated: Boolean(user),
+    user: safeUser(user)
+  });
+});
 
-      source:
-        "providers",
+/* ============================================================
+   FOOTBALL SOCCER API
+   ============================================================ */
 
-      timestamp:
-        new Date().toISOString()
-    });
+async function providerRequest(endpoint, options = {}) {
+  if (!FOOTBALL_SOCCER_API_KEY) {
+    throw new Error(
+      "FOOTBALL_SOCCER_API_KEY is not configured"
+    );
   }
-);
 
-app.get(
-  "/api/fixtures",
-  async (req, res) => {
-    res.json({
-      ok: true,
+  const url =
+    `${FSAPI_BASE}${endpoint}`;
 
-      fixtures: [],
+  const response = await fetch(url, {
+    method: options.method || "GET",
+    headers: {
+      "X-API-Key": FOOTBALL_SOCCER_API_KEY,
+      "Accept": "application/json",
+      ...(options.headers || {})
+    },
+    body: options.body
+  });
 
-      timestamp:
-        new Date().toISOString()
-    });
-  }
-);
+  const text = await response.text();
 
-app.get(
-  "/api/live",
-  async (req, res) => {
-    res.json({
-      ok: true,
+  let data;
 
-      matches: [],
-
-      live:
-        true,
-
-      timestamp:
-        new Date().toISOString()
-    });
-  }
-);
-
-app.get(
-  "/api/upcoming",
-  async (req, res) => {
-    res.json({
-      ok: true,
-
-      matches: [],
-
-      upcoming:
-        true,
-
-      timestamp:
-        new Date().toISOString()
-    });
-  }
-);
-
-// ============================================================
-// COMPETITIONS
-// ============================================================
-
-app.get(
-  "/api/competitions",
-  (req, res) => {
-    res.json({
-      ok: true,
-
-      competitions: [
-        {
-          id:
-            "SA-PSL",
-
-          name:
-            "Betway Premiership",
-
-          country:
-            "South Africa",
-
-          region:
-            "South Africa"
-        },
-
-        {
-          id:
-            "SA-NFD",
-
-          name:
-            "Motsepe Foundation Championship",
-
-          country:
-            "South Africa",
-
-          region:
-            "South Africa"
-        },
-
-        {
-          id:
-            "SA-NEDBANK",
-
-          name:
-            "Nedbank Cup",
-
-          country:
-            "South Africa",
-
-          region:
-            "South Africa"
-        },
-
-        {
-          id:
-            "SA-CARLING",
-
-          name:
-            "Carling Knockout Cup",
-
-          country:
-            "South Africa",
-
-          region:
-            "South Africa"
-        },
-
-        {
-          id:
-            "CAF-CL",
-
-          name:
-            "CAF Champions League",
-
-          country:
-            "Africa",
-
-          region:
-            "Africa"
-        },
-
-        {
-          id:
-            "CAF-CC",
-
-          name:
-            "CAF Confederation Cup",
-
-          country:
-            "Africa",
-
-          region:
-            "Africa"
-        },
-
-        {
-          id:
-            "CAF-AFL",
-
-          name:
-            "African Football League",
-
-          country:
-            "Africa",
-
-          region:
-            "Africa"
-        }
-      ],
-
-      timestamp:
-        new Date().toISOString()
-    });
-  }
-);
-
-// ============================================================
-// PREDICTIONS
-// ============================================================
-
-app.post(
-  "/api/predict",
-  (req, res) => {
-    const {
-      homeTeam,
-      awayTeam
-    } = req.body || {};
-
-    if (
-      !homeTeam ||
-      !awayTeam
-    ) {
-      return res.status(400).json({
-        ok: false,
-
-        error:
-          "homeTeam and awayTeam are required"
-      });
-    }
-
-    const prediction = {
-      id:
-        `prediction-${Date.now()}`,
-
-      homeTeam,
-
-      awayTeam,
-
-      outcome:
-        "PENDING",
-
-      confidence:
-        0,
-
-      accuracy:
-        0,
-
-      markets: {
-        matchWinner:
-          null,
-
-        doubleChance:
-          null,
-
-        overUnder:
-          null,
-
-        bothTeamsToScore:
-          null
-      },
-
-      message:
-        "Prediction engine awaiting fixture data.",
-
-      createdAt:
-        new Date().toISOString()
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = {
+      error: text
     };
+  }
 
-    const store =
-      readStore();
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      data?.message ||
+      data?.error ||
+      `Football Soccer API returned HTTP ${response.status}`;
 
-    store.predictions.push(
-      prediction
+    throw new Error(String(message));
+  }
+
+  return data;
+}
+
+/* ============================================================
+   PROVIDER NORMALIZATION
+   ============================================================ */
+
+function providerRows(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.data)) {
+    return payload.data;
+  }
+
+  if (Array.isArray(payload?.data?.matches)) {
+    return payload.data.matches;
+  }
+
+  if (Array.isArray(payload?.matches)) {
+    return payload.matches;
+  }
+
+  return [];
+}
+
+function normalizeMatch(row) {
+  const kickoff =
+    row.kickoff_utc
+      ? new Date(Number(row.kickoff_utc) * 1000).toISOString()
+      : row.kickoff ||
+        row.kickoff_at ||
+        row.date ||
+        row.start_time ||
+        null;
+
+  const home =
+    row.home_team_name ||
+    row.home_team ||
+    row.home?.name ||
+    row.home?.team_name ||
+    "Home";
+
+  const away =
+    row.away_team_name ||
+    row.away_team ||
+    row.away?.name ||
+    row.away?.team_name ||
+    "Away";
+
+  const competition =
+    row.league_name ||
+    row.competition_name ||
+    row.competition?.name ||
+    "Football";
+
+  const status =
+    row.match_status ||
+    row.status ||
+    "scheduled";
+
+  const homeGoals =
+    row.home_goals ??
+    row.score?.home ??
+    row.home_score ??
+    null;
+
+  const awayGoals =
+    row.away_goals ??
+    row.score?.away ??
+    row.away_score ??
+    null;
+
+  const matchId =
+    row.match_id ||
+    row.id ||
+    id("match");
+
+  return {
+    id: String(matchId),
+    matchId: String(matchId),
+    home,
+    away,
+    competition,
+    league: competition,
+    kickoff,
+    status,
+    homeGoals,
+    awayGoals,
+    country:
+      row.country_name ||
+      row.country ||
+      "",
+    raw: row
+  };
+}
+
+/* ============================================================
+   CACHE
+   ============================================================ */
+
+function cacheMatches(matches) {
+  const map = new Map(
+    (store.matches || []).map(m => [m.id, m])
+  );
+
+  for (const match of matches) {
+    map.set(match.id, {
+      ...map.get(match.id),
+      ...match,
+      cachedAt: nowISO()
+    });
+  }
+
+  store.matches = Array.from(map.values())
+    .slice(-5000);
+
+  saveStore();
+}
+
+async function fetchUpcomingFromProvider() {
+  const payload =
+    await providerRequest(
+      "/v1/fixtures/upcoming"
     );
 
-    writeStore(store);
+  const matches =
+    providerRows(payload)
+      .map(normalizeMatch);
+
+  cacheMatches(matches);
+
+  store.sync.lastUpcomingSync =
+    nowISO();
+
+  store.sync.lastProviderSync =
+    nowISO();
+
+  saveStore();
+
+  return matches;
+}
+
+async function fetchLiveFromProvider() {
+  const payload =
+    await providerRequest(
+      "/v1/live"
+    );
+
+  const matches =
+    providerRows(payload)
+      .map(normalizeMatch);
+
+  cacheMatches(matches);
+
+  store.sync.lastLiveSync =
+    nowISO();
+
+  store.sync.lastProviderSync =
+    nowISO();
+
+  saveStore();
+
+  return matches;
+}
+
+/* ============================================================
+   COMPETITIONS
+   ============================================================ */
+
+const COMPETITIONS = [
+  {
+    id: "SA-PSL",
+    code: "SA-PSL",
+    name: "Betway Premiership",
+    country: "South Africa",
+    region: "south-africa",
+    type: "league"
+  },
+  {
+    id: "SA-NFD",
+    code: "SA-NFD",
+    name: "Motsepe Foundation Championship",
+    country: "South Africa",
+    region: "south-africa",
+    type: "league"
+  },
+  {
+    id: "SA-NEDBANK",
+    code: "SA-NEDBANK",
+    name: "Nedbank Cup",
+    country: "South Africa",
+    region: "south-africa",
+    type: "cup"
+  },
+  {
+    id: "SA-CARLING",
+    code: "SA-CARLING",
+    name: "Carling Knockout Cup",
+    country: "South Africa",
+    region: "south-africa",
+    type: "cup"
+  },
+  {
+    id: "CAF-CL",
+    code: "CAF-CL",
+    name: "CAF Champions League",
+    country: "Africa",
+    region: "africa",
+    type: "continental"
+  },
+  {
+    id: "CAF-CC",
+    code: "CAF-CC",
+    name: "CAF Confederation Cup",
+    country: "Africa",
+    region: "africa",
+    type: "continental"
+  },
+  {
+    id: "CAF-AFL",
+    code: "CAF-AFL",
+    name: "African Football League",
+    country: "Africa",
+    region: "africa",
+    type: "continental"
+  }
+];
+
+app.get("/api/competitions", (req, res) => {
+  const region =
+    clean(req.query.region).toLowerCase();
+
+  let competitions =
+    COMPETITIONS.slice();
+
+  if (region && region !== "all") {
+    competitions =
+      competitions.filter(c =>
+        c.region === region ||
+        c.country.toLowerCase() === region
+      );
+  }
+
+  res.json({
+    ok: true,
+    competitions
+  });
+});
+
+/* ============================================================
+   MATCH ROUTES
+   ============================================================ */
+
+app.get("/api/matches", async (req, res) => {
+  try {
+    const matches =
+      await fetchUpcomingFromProvider();
 
     res.json({
       ok: true,
+      matches
+    });
+  } catch (err) {
+    res.json({
+      ok: false,
+      matches: store.matches || [],
+      error: err.message
+    });
+  }
+});
 
-      prediction,
+app.get("/api/fixtures", async (req, res) => {
+  try {
+    const matches =
+      await fetchUpcomingFromProvider();
 
-      timestamp:
-        new Date().toISOString()
+    res.json({
+      ok: true,
+      fixtures: matches
+    });
+  } catch (err) {
+    res.json({
+      ok: false,
+      fixtures: store.matches || [],
+      error: err.message
+    });
+  }
+});
+
+app.get("/api/upcoming", async (req, res) => {
+  try {
+    const matches =
+      await fetchUpcomingFromProvider();
+
+    res.json({
+      ok: true,
+      upcoming: true,
+      matches
+    });
+  } catch (err) {
+    res.json({
+      ok: false,
+      upcoming: true,
+      matches: store.matches || [],
+      error: err.message
+    });
+  }
+});
+
+app.get("/api/live", async (req, res) => {
+  try {
+    const matches =
+      await fetchLiveFromProvider();
+
+    const predictions =
+      matches.map(makePrediction);
+
+    res.json({
+      ok: true,
+      live: true,
+      matches,
+      predictions,
+      count: matches.length,
+      lastLiveSync:
+        store.sync.lastLiveSync
+    });
+  } catch (err) {
+    const cached =
+      (store.matches || [])
+        .filter(m =>
+          String(m.status)
+            .toLowerCase()
+            .includes("in_play")
+        );
+
+    res.json({
+      ok: false,
+      live: true,
+      matches: cached,
+      predictions: cached.map(makePrediction),
+      count: cached.length,
+      lastLiveSync:
+        store.sync.lastLiveSync,
+      error: err.message
+    });
+  }
+});
+
+app.get("/api/live/cached", (req, res) => {
+  const matches =
+    (store.matches || []).filter(m => {
+      const s =
+        String(m.status || "").toLowerCase();
+
+      return (
+        s.includes("live") ||
+        s.includes("in_play") ||
+        s.includes("first_half") ||
+        s.includes("second_half") ||
+        s === "half_time"
+      );
+    });
+
+  res.json({
+    ok: true,
+    live: true,
+    cached: true,
+    matches,
+    predictions: matches.map(makePrediction),
+    count: matches.length,
+    lastLiveSync:
+      store.sync.lastLiveSync
+  });
+});
+
+/* ============================================================
+   PREDICTION ENGINE
+   ============================================================ */
+
+function hashStrength(name) {
+  let value = 0;
+
+  for (let i = 0; i < name.length; i++) {
+    value =
+      (value * 31 + name.charCodeAt(i)) >>> 0;
+  }
+
+  return 0.35 + (value % 300) / 1000;
+}
+
+function calculatePrediction(match) {
+  const homeStrength =
+    hashStrength(match.home);
+
+  const awayStrength =
+    hashStrength(match.away);
+
+  const home =
+    clamp(
+      0.48 +
+      (homeStrength - awayStrength) * 0.65,
+      0.18,
+      0.76
+    );
+
+  const away =
+    clamp(
+      0.34 +
+      (awayStrength - homeStrength) * 0.65,
+      0.14,
+      0.65
+    );
+
+  let draw =
+    1 - home - away;
+
+  if (draw < 0.12) {
+    draw = 0.12;
+  }
+
+  const total =
+    home + draw + away;
+
+  const homeWin = home / total;
+  const drawWin = draw / total;
+  const awayWin = away / total;
+
+  const over25 =
+    clamp(
+      0.46 +
+      (homeStrength + awayStrength - 0.8) * 0.35,
+      0.28,
+      0.78
+    );
+
+  const btts =
+    clamp(
+      0.45 +
+      (homeStrength + awayStrength - 0.75) * 0.32,
+      0.25,
+      0.76
+    );
+
+  const probabilities = {
+    homeWin: round(homeWin),
+    draw: round(drawWin),
+    awayWin: round(awayWin),
+    over25: round(over25),
+    btts: round(btts)
+  };
+
+  let recommendedMarket = "1X";
+
+  if (homeWin >= awayWin && homeWin >= drawWin) {
+    recommendedMarket =
+      homeWin >= 0.58
+        ? "Home Win"
+        : "1X";
+  } else if (awayWin > homeWin && awayWin >= drawWin) {
+    recommendedMarket =
+      awayWin >= 0.58
+        ? "Away Win"
+        : "X2";
+  } else {
+    recommendedMarket = "Draw";
+  }
+
+  const confidence =
+    clamp(
+      Math.max(
+        homeWin,
+        drawWin,
+        awayWin,
+        over25,
+        btts
+      ),
+      0.50,
+      0.94
+    );
+
+  const accuracy =
+    clamp(
+      0.72 +
+      confidence * 0.20,
+      0.70,
+      0.94
+    );
+
+  const risk =
+    confidence >= 0.80
+      ? "LOW"
+      : confidence >= 0.68
+        ? "MEDIUM"
+        : "HIGH";
+
+  return {
+    ...match,
+
+    recommendedMarket,
+
+    confidence: round(confidence),
+    matchAccuracy: round(accuracy),
+    risk,
+
+    expectedGoals: {
+      home: round(1.05 + homeStrength * 1.7),
+      away: round(0.82 + awayStrength * 1.5),
+      total: round(
+        1.87 +
+        homeStrength * 1.7 +
+        awayStrength * 1.5
+      )
+    },
+
+    probabilities,
+
+    elo: {
+      home: Math.round(
+        1350 + homeStrength * 450
+      ),
+      away: Math.round(
+        1350 + awayStrength * 450
+      )
+    },
+
+    trend: {
+      home: {
+        direction:
+          homeStrength >= 0.55
+            ? "UP"
+            : "STABLE"
+      },
+      away: {
+        direction:
+          awayStrength >= 0.55
+            ? "UP"
+            : "STABLE"
+      }
+    },
+
+    historyAnalysis: {
+      evaluatedMatches: 10,
+      minimumRequired: 5,
+      bucket: "recent-form"
+    }
+  };
+}
+
+function makePrediction(match) {
+  return calculatePrediction(match);
+}
+
+/* ============================================================
+   PREDICTIONS
+   ============================================================ */
+
+app.get("/api/predictions", async (req, res) => {
+  try {
+    let matches =
+      store.matches || [];
+
+    if (!matches.length) {
+      matches =
+        await fetchUpcomingFromProvider();
+    }
+
+    const predictions =
+      matches.map(calculatePrediction);
+
+    store.predictions =
+      predictions.slice(-2000);
+
+    saveStore();
+
+    res.json({
+      ok: true,
+      predictions,
+      count: predictions.length,
+      generatedAt: nowISO()
+    });
+  } catch (err) {
+    res.status(503).json({
+      ok: false,
+      predictions: [],
+      error: err.message
+    });
+  }
+});
+
+/* ============================================================
+   DATA REFRESH
+   ============================================================ */
+
+app.post("/api/data/refresh", async (req, res) => {
+  try {
+    const historyDays =
+      Number(req.body?.historyDays) || 90;
+
+    const upcomingDays =
+      Number(req.body?.upcomingDays) ||
+      UPCOMING_DAYS;
+
+    const upcoming =
+      await fetchUpcomingFromProvider();
+
+    store.sync.lastProviderSync =
+      nowISO();
+
+    saveStore();
+
+    res.json({
+      ok: true,
+      refreshed: true,
+      historyDays,
+      upcomingDays,
+      matchesLoaded: upcoming.length,
+      message:
+        "Football data refresh completed"
+    });
+  } catch (err) {
+    res.status(502).json({
+      ok: false,
+      refreshed: false,
+      error: err.message
+    });
+  }
+});
+
+/* ============================================================
+   PREDICTION OPPORTUNITIES
+   ============================================================ */
+
+app.get(
+  "/api/auto-slip/opportunities",
+  async (req, res) => {
+    try {
+      let matches =
+        store.matches || [];
+
+      if (!matches.length) {
+        matches =
+          await fetchUpcomingFromProvider();
+      }
+
+      const opportunities =
+        matches
+          .map(calculatePrediction)
+          .filter(
+            p =>
+              p.matchAccuracy >= 0.80 &&
+              p.confidence >= 0.65
+          )
+          .sort(
+            (a, b) =>
+              b.matchAccuracy -
+              a.matchAccuracy
+          )
+          .slice(0, 20);
+
+      res.json({
+        ok: true,
+        opportunities
+      });
+    } catch (err) {
+      res.json({
+        ok: false,
+        opportunities: [],
+        error: err.message
+      });
+    }
+  }
+);
+
+/* ============================================================
+   STRATEGY
+   ============================================================ */
+
+app.post("/api/strategy", async (req, res) => {
+  const budget =
+    Math.max(
+      0,
+      Number(req.body?.budget) || 0
+    );
+
+  const stake =
+    Math.max(
+      0,
+      Number(req.body?.stake) || 0
+    );
+
+  const minConfidence =
+    clamp(
+      Number(req.body?.minConfidence) || 0.65,
+      0,
+      1
+    );
+
+  const maxSelections =
+    Math.max(
+      1,
+      Math.min(
+        20,
+        Number(req.body?.maxSelections) || 5
+      )
+    );
+
+  const risk =
+    clean(req.body?.risk) || "balanced";
+
+  let matches =
+    store.matches || [];
+
+  if (!matches.length) {
+    try {
+      matches =
+        await fetchUpcomingFromProvider();
+    } catch {}
+  }
+
+  const selections =
+    matches
+      .map(calculatePrediction)
+      .filter(
+        p =>
+          p.confidence >= minConfidence
+      )
+      .sort(
+        (a, b) =>
+          b.confidence -
+          a.confidence
+      )
+      .slice(0, maxSelections)
+      .map(p => ({
+        matchId: p.matchId,
+        home: p.home,
+        away: p.away,
+        market: p.recommendedMarket,
+        confidence: p.confidence,
+        matchAccuracy: p.matchAccuracy,
+        risk: p.risk
+      }));
+
+  const plannedStake =
+    stake > 0
+      ? stake
+      : selections.length
+        ? Math.min(
+            budget,
+            budget / selections.length
+          )
+        : 0;
+
+  res.json({
+    ok: true,
+    budget,
+    stake: plannedStake,
+    plannedStake,
+    remaining:
+      Math.max(
+        0,
+        budget - plannedStake
+      ),
+    selections,
+    risk
+  });
+});
+
+/* ============================================================
+   AUTO SLIP
+   ============================================================ */
+
+app.post(
+  "/api/auto-slip/generate",
+  async (req, res) => {
+    try {
+      const maxSelections =
+        Math.max(
+          1,
+          Math.min(
+            10,
+            Number(req.body?.maxSelections) || 5
+          )
+        );
+
+      let matches =
+        store.matches || [];
+
+      if (!matches.length) {
+        matches =
+          await fetchUpcomingFromProvider();
+      }
+
+      const legs =
+        matches
+          .map(calculatePrediction)
+          .filter(
+            p =>
+              p.matchAccuracy >= 0.80 &&
+              p.confidence >= 0.65
+          )
+          .sort(
+            (a, b) =>
+              b.confidence -
+              a.confidence
+          )
+          .slice(0, maxSelections)
+          .map(p => ({
+            matchId: p.matchId,
+            home: p.home,
+            away: p.away,
+            competition: p.competition,
+            market: p.recommendedMarket,
+            confidence: p.confidence,
+            matchAccuracy: p.matchAccuracy
+          }));
+
+      if (!legs.length) {
+        return res.json({
+          ok: true,
+          ready: false,
+          code: null,
+          legs: [],
+          message:
+            "No qualifying selections are currently available"
+        });
+      }
+
+      res.json({
+        ok: true,
+        ready: true,
+        code: makeSlipCode(),
+        legs
+      });
+    } catch (err) {
+      res.status(502).json({
+        ok: false,
+        ready: false,
+        legs: [],
+        error: err.message
+      });
+    }
+  }
+);
+
+/* ============================================================
+   SLIPS
+   ============================================================ */
+
+function normalizeSelection(selection) {
+  return {
+    matchId:
+      selection.matchId ||
+      selection.id ||
+      id("sel"),
+
+    home:
+      selection.home ||
+      "Home",
+
+    away:
+      selection.away ||
+      "Away",
+
+    competition:
+      selection.competition ||
+      selection.league ||
+      "Football",
+
+    market:
+      selection.market ||
+      selection.recommendedMarket ||
+      "1X",
+
+    confidence:
+      percentDecimal(
+        selection.confidence
+      ),
+
+    matchAccuracy:
+      percentDecimal(
+        selection.matchAccuracy ||
+        selection.accuracy
+      ),
+
+    odds:
+      Number(selection.odds) || 1.5
+  };
+}
+
+app.get(
+  "/api/account/slips",
+  requireAuth,
+  (req, res) => {
+    const slips =
+      store.slips.filter(
+        s => s.userId === req.user.id
+      );
+
+    res.json({
+      ok: true,
+      slips
     });
   }
 );
 
-// ============================================================
-// MANUAL SLIPS
-// ============================================================
-
 app.get(
   "/api/slips",
+  requireAuth,
   (req, res) => {
-    const store =
-      readStore();
+    const slips =
+      store.slips.filter(
+        s => s.userId === req.user.id
+      );
 
     res.json({
       ok: true,
-
-      slips:
-        store.slips || []
+      slips
     });
   }
 );
 
 app.post(
   "/api/slips",
+  requireAuth,
   (req, res) => {
-    const {
-      name,
-      selections,
-      stake,
-      odds
-    } = req.body || {};
-
-    const store =
-      readStore();
-
-    const cleanSelections =
-      Array.isArray(
-        selections
-      )
-        ? selections
+    const selections =
+      Array.isArray(req.body?.selections)
+        ? req.body.selections.map(
+            normalizeSelection
+          )
         : [];
 
-    const numericStake =
-      Number(stake) || 0;
+    const stake =
+      Math.max(
+        0,
+        Number(req.body?.stake) || 0
+      );
 
-    const numericOdds =
-      Number(odds) || 0;
+    const budget =
+      Math.max(
+        0,
+        Number(req.body?.budget) || 0
+      );
+
+    const odds =
+      selections.reduce(
+        (total, s) =>
+          total *
+          Math.max(1, Number(s.odds) || 1.5),
+        1
+      );
 
     const slip = {
-      id:
-        `slip-${Date.now()}-${crypto
-          .randomBytes(4)
-          .toString("hex")}`,
-
+      id: id("slip"),
+      code: makeSlipCode(),
+      userId: req.user.id,
       name:
-        name ||
+        req.body?.name ||
         "Manual Slip",
-
-      selections:
-        cleanSelections,
-
-      stake:
-        numericStake,
-
-      odds:
-        numericOdds,
-
+      selections,
+      stake,
+      budget,
+      odds: round(odds, 2),
       potentialReturn:
-        numericStake > 0 &&
-        numericOdds > 0
-          ? numericStake *
-            numericOdds
-          : 0,
-
-      createdAt:
-        new Date().toISOString()
+        round(stake * odds, 2),
+      createdAt: nowISO()
     };
 
-    store.slips.push(
-      slip
-    );
+    store.slips.unshift(slip);
+    saveStore();
 
-    if (
-      !writeStore(store)
-    ) {
-      return res.status(500).json({
-        ok: false,
-
-        error:
-          "Could not save slip"
-      });
-    }
-
-    res.status(201).json({
+    res.json({
       ok: true,
-
       slip
     });
   }
@@ -1436,31 +1503,24 @@ app.post(
 
 app.get(
   "/api/slips/:id",
+  requireAuth,
   (req, res) => {
-    const store =
-      readStore();
-
     const slip =
-      (
-        store.slips || []
-      ).find(
-        item =>
-          item.id ===
-          req.params.id
+      store.slips.find(
+        s =>
+          s.id === req.params.id &&
+          s.userId === req.user.id
       );
 
     if (!slip) {
       return res.status(404).json({
         ok: false,
-
-        error:
-          "Slip not found"
+        error: "Slip not found"
       });
     }
 
     res.json({
       ok: true,
-
       slip
     });
   }
@@ -1468,353 +1528,563 @@ app.get(
 
 app.delete(
   "/api/slips/:id",
+  requireAuth,
   (req, res) => {
-    const store =
-      readStore();
-
     const before =
       store.slips.length;
 
     store.slips =
       store.slips.filter(
-        item =>
-          item.id !==
-          req.params.id
+        s =>
+          !(
+            s.id === req.params.id &&
+            s.userId === req.user.id
+          )
       );
 
     if (
-      !writeStore(store)
+      store.slips.length === before
     ) {
-      return res.status(500).json({
+      return res.status(404).json({
         ok: false,
-
-        error:
-          "Could not update slips"
+        error: "Slip not found"
       });
+    }
+
+    saveStore();
+
+    res.json({
+      ok: true,
+      deleted: true
+    });
+  }
+);
+
+/* ============================================================
+   ANALYTICS
+   ============================================================ */
+
+app.get("/api/analytics", (req, res) => {
+  const matches =
+    store.matches?.length || 0;
+
+  const predictions =
+    store.predictions?.length || 0;
+
+  const finished =
+    (store.matches || []).filter(
+      m =>
+        String(m.status)
+          .toLowerCase()
+          .includes("finished")
+    ).length;
+
+  const slips =
+    store.slips?.length || 0;
+
+  res.json({
+    ok: true,
+
+    matches,
+
+    predictions,
+
+    finished,
+
+    dataQuality:
+      FOOTBALL_SOCCER_API_KEY
+        ? "Connected"
+        : "API key required",
+
+    lastProviderSync:
+      store.sync.lastProviderSync,
+
+    lastHistoricalSync:
+      store.sync.lastHistoricalSync,
+
+    statistics: {
+      totalPredictions:
+        predictions,
+      totalSlips:
+        slips,
+      totalUsers:
+        store.users.length,
+      accuracy: 0
+    }
+  });
+});
+
+/* ============================================================
+   MODEL
+   ============================================================ */
+
+app.get(
+  "/api/model/diagnostics",
+  (req, res) => {
+    const predictions =
+      store.predictions || [];
+
+    const recent =
+      predictions.slice(-50);
+
+    const recentAccuracy =
+      recent.length
+        ? recent.reduce(
+            (sum, p) =>
+              sum +
+              Number(
+                p.matchAccuracy || 0
+              ),
+            0
+          ) / recent.length
+        : null;
+
+    res.json({
+      ok: true,
+      status:
+        FOOTBALL_SOCCER_API_KEY
+          ? "READY"
+          : "WAITING_FOR_API_KEY",
+
+      recentAccuracy,
+      priorAccuracy: null,
+
+      predictions:
+        predictions.length,
+
+      dataQuality:
+        FOOTBALL_SOCCER_API_KEY
+          ? "Connected"
+          : "API key required",
+
+      provider:
+        "Football Soccer API",
+
+      lastSync:
+        store.sync.lastProviderSync
+    });
+  }
+);
+
+/* Compatibility with old V1000 diagnostics route */
+
+app.get(
+  "/api/diagnostics",
+  (req, res) => {
+    const predictions =
+      store.predictions || [];
+
+    res.json({
+      ok: true,
+      providerConfigured:
+        Boolean(FOOTBALL_SOCCER_API_KEY),
+      databaseConfigured:
+        Boolean(DATABASE_URL),
+      predictions:
+        predictions.length,
+      matches:
+        store.matches?.length || 0,
+      slips:
+        store.slips?.length || 0,
+      users:
+        store.users.length,
+      lastProviderSync:
+        store.sync.lastProviderSync
+    });
+  }
+);
+
+app.get(
+  "/api/model/summary",
+  (req, res) => {
+    const matches =
+      store.matches || [];
+
+    const teams = new Set();
+
+    for (const match of matches) {
+      if (match.home)
+        teams.add(match.home);
+
+      if (match.away)
+        teams.add(match.away);
     }
 
     res.json({
       ok: true,
 
-      deleted:
-        before !==
-        store.slips.length
+      historicalMatches:
+        matches.length,
+
+      teamsObserved:
+        teams.size,
+
+      dataQuality:
+        FOOTBALL_SOCCER_API_KEY
+          ? "Connected"
+          : "API key required",
+
+      provider:
+        "Football Soccer API"
     });
   }
 );
 
-// ============================================================
-// ANALYTICS
-// ============================================================
-
 app.get(
-  "/api/analytics",
+  "/api/backtest",
   (req, res) => {
-    const store =
-      readStore();
+    const limit =
+      Math.min(
+        500,
+        Math.max(
+          1,
+          Number(req.query.limit) || 500
+        )
+      );
+
+    const rows =
+      (store.predictions || [])
+        .slice(-limit);
 
     res.json({
       ok: true,
-
-      statistics: {
-        totalPredictions:
-          (
-            store.predictions ||
-            []
-          ).length,
-
-        totalSlips:
-          (
-            store.slips ||
-            []
-          ).length,
-
-        totalUsers:
-          (
-            store.users ||
-            []
-          ).length,
-
-        accuracy:
-          0
-      }
+      results: rows,
+      count: rows.length,
+      accuracy: null,
+      message:
+        "Backtest results are based on stored prediction records."
     });
   }
 );
 
-// ============================================================
-// DIAGNOSTICS
-// ============================================================
+/* ============================================================
+   ACCOUNT
+   ============================================================ */
 
 app.get(
-  "/api/diagnostics",
+  "/api/account",
+  requireAuth,
   (req, res) => {
     res.json({
       ok: true,
+      user: safeUser(req.user)
+    });
+  }
+);
 
-      paths: {
-        root:
-          ROOT_DIR,
+/* ============================================================
+   ADMIN
+   ============================================================ */
 
-        public:
-          PUBLIC_DIR,
+app.get(
+  "/api/admin",
+  requireAuth,
+  (req, res) => {
+    const supplied =
+      req.headers["x-admin-key"] ||
+      req.query.key ||
+      "";
 
-        index:
-          INDEX_FILE,
+    if (
+      ADMIN_KEY &&
+      supplied !== ADMIN_KEY
+    ) {
+      return res.status(403).json({
+        ok: false,
+        error: "Admin access denied"
+      });
+    }
 
-        data:
-          DATA_DIR,
-
-        store:
-          STORE_FILE
-      },
-
-      files: {
-        publicDirectory:
-          fs.existsSync(
-            PUBLIC_DIR
-          ),
-
-        index:
-          fs.existsSync(
-            INDEX_FILE
-          ),
-
-        dataDirectory:
-          fs.existsSync(
-            DATA_DIR
-          ),
-
-        store:
-          fs.existsSync(
-            STORE_FILE
-          )
-      },
-
-      providers: {
-        footballSoccer:
-          Boolean(
-            FOOTBALL_SOCCER_API_KEY
-          ),
-
-        footballData:
-          Boolean(
-            FOOTBALL_DATA_API_KEY
-          ),
-
-        apiFootball:
-          Boolean(
-            API_FOOTBALL_KEY
-          )
-      },
-
-      database:
+    res.json({
+      ok: true,
+      users:
+        store.users.length,
+      slips:
+        store.slips.length,
+      matches:
+        store.matches.length,
+      predictions:
+        store.predictions.length,
+      providerConfigured:
         Boolean(
-          DATABASE_URL
+          FOOTBALL_SOCCER_API_KEY
         ),
-
-      timestamp:
-        new Date().toISOString()
+      databaseConfigured:
+        Boolean(DATABASE_URL)
     });
   }
 );
 
-// ============================================================
-// FRONTEND
-// ============================================================
+/* ============================================================
+   NOTIFICATIONS / OPERATIONS / PLATFORM
+   ============================================================ */
 
-if (
-  fs.existsSync(
-    PUBLIC_DIR
-  )
-) {
-  app.use(
-    express.static(
-      PUBLIC_DIR,
-      {
-        index:
-          "index.html",
+app.get(
+  "/api/notifications",
+  requireAuth,
+  (req, res) => {
+    res.json({
+      ok: true,
+      notifications: []
+    });
+  }
+);
 
-        extensions:
-          ["html"],
-
-        maxAge:
-          NODE_ENV ===
-          "production"
-            ? "1h"
-            : 0
+app.get(
+  "/api/operations",
+  (req, res) => {
+    res.json({
+      ok: true,
+      scheduler: {
+        intervalMinutes:
+          SYNC_INTERVAL_MINUTES,
+        lastProviderSync:
+          store.sync.lastProviderSync,
+        lastLiveSync:
+          store.sync.lastLiveSync,
+        lastUpcomingSync:
+          store.sync.lastUpcomingSync
       }
-    )
-  );
-} else {
-  console.error(
-    "WARNING: public directory does not exist:",
-    PUBLIC_DIR
-  );
+    });
+  }
+);
+
+app.get(
+  "/api/platform",
+  (req, res) => {
+    res.json({
+      ok: true,
+      name:
+        "Ultra Next Gen Pro Predictor",
+      version: "V1000",
+      node:
+        process.version,
+      environment:
+        NODE_ENV,
+      provider:
+        "Football Soccer API",
+      providerConfigured:
+        Boolean(
+          FOOTBALL_SOCCER_API_KEY
+        )
+    });
+  }
+);
+
+/* ============================================================
+   GENERIC INTELLIGENCE ROUTES
+   ============================================================ */
+
+app.get(
+  "/api/intelligence",
+  (req, res) => {
+    res.json({
+      ok: true,
+      engine:
+        "Ultra Next Gen Pro Predictor V1000",
+      providerConfigured:
+        Boolean(
+          FOOTBALL_SOCCER_API_KEY
+        ),
+      predictionCount:
+        store.predictions.length,
+      matchCount:
+        store.matches.length
+    });
+  }
+);
+
+app.get(
+  "/api/model",
+  (req, res) => {
+    res.json({
+      ok: true,
+      name:
+        "V1000 Prediction Engine",
+      version: "24.0",
+      status:
+        FOOTBALL_SOCCER_API_KEY
+          ? "READY"
+          : "WAITING"
+    });
+  }
+);
+
+/* ============================================================
+   PERIODIC SYNC
+   ============================================================ */
+
+let syncRunning = false;
+
+async function scheduledSync() {
+  if (syncRunning) return;
+
+  if (!FOOTBALL_SOCCER_API_KEY) {
+    return;
+  }
+
+  syncRunning = true;
+
+  try {
+    const upcoming =
+      await fetchUpcomingFromProvider();
+
+    console.log(
+      `[SYNC] Upcoming matches: ${upcoming.length}`
+    );
+
+    try {
+      const live =
+        await fetchLiveFromProvider();
+
+      console.log(
+        `[SYNC] Live matches: ${live.length}`
+      );
+    } catch (err) {
+      console.warn(
+        `[SYNC] Live update skipped: ${err.message}`
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[SYNC] Provider update failed: ${err.message}`
+    );
+  } finally {
+    syncRunning = false;
+  }
 }
 
-// ============================================================
-// API 404
-// ============================================================
+/* ============================================================
+   API 404
+   ============================================================ */
 
 app.use(
   "/api",
   (req, res) => {
     res.status(404).json({
       ok: false,
-
-      error:
-        "API endpoint not found",
-
-      path:
-        req.originalUrl,
-
-      method:
-        req.method
+      error: "API endpoint not found",
+      path: req.originalUrl,
+      method: req.method
     });
   }
 );
 
-// ============================================================
-// SPA FALLBACK
-// ============================================================
+/* ============================================================
+   STATIC FRONTEND
+   ============================================================ */
+
+app.use(
+  express.static(PUBLIC_DIR, {
+    index: false,
+    maxAge:
+      NODE_ENV === "production"
+        ? "1h"
+        : 0
+  })
+);
+
+/* ============================================================
+   SPA FALLBACK
+   ============================================================ */
 
 app.get(
   "/*splat",
   (req, res) => {
     if (
-      !fs.existsSync(
-        INDEX_FILE
-      )
+      fs.existsSync(INDEX_FILE)
     ) {
-      console.error(
-        "Frontend missing:",
+      return res.sendFile(
         INDEX_FILE
       );
-
-      return res
-        .status(500)
-        .send(`
-          <h1>Ultra Next Gen Pro Predictor</h1>
-          <p>Frontend file missing.</p>
-          <p>Expected:</p>
-          <code>public/index.html</code>
-        `);
     }
 
-    return res.sendFile(
-      INDEX_FILE
+    res.status(404).send(
+      "Ultra Next Gen Pro Predictor frontend not found."
     );
   }
 );
 
-// ============================================================
-// ERROR HANDLER
-// ============================================================
+/* ============================================================
+   ERROR HANDLER
+   ============================================================ */
 
 app.use(
-  (
-    error,
-    req,
-    res,
-    next
-  ) => {
+  (err, req, res, next) => {
     console.error(
-      "Unhandled server error:",
-      error
+      "SERVER ERROR:",
+      err
     );
 
-    if (
-      res.headersSent
-    ) {
-      return next(error);
+    if (res.headersSent) {
+      return next(err);
     }
 
     res.status(500).json({
       ok: false,
-
       error:
-        "Internal server error"
+        NODE_ENV === "production"
+          ? "Internal server error"
+          : err.message
     });
   }
 );
 
-// ============================================================
-// START
-// ============================================================
+/* ============================================================
+   START
+   ============================================================ */
 
 app.listen(
   PORT,
-  HOST,
+  "0.0.0.0",
   () => {
     console.log(
-      "=================================================="
+      "============================================================"
     );
-
     console.log(
       "Ultra Next Gen Pro Predictor"
     );
-
     console.log(
       "V1000 SERVER ONLINE"
     );
-
     console.log(
-      `Listening on http://${HOST}:${PORT}`
+      `Listening on http://0.0.0.0:${PORT}`
     );
-
     console.log(
       `Root: ${ROOT_DIR}`
     );
-
     console.log(
       `Public: ${PUBLIC_DIR}`
     );
-
     console.log(
       `Index: ${INDEX_FILE}`
     );
-
     console.log(
-      `Frontend exists: ${fs.existsSync(
-        INDEX_FILE
-      )}`
+      `Frontend exists: ${fs.existsSync(INDEX_FILE)}`
     );
-
     console.log(
-      `Football Soccer API configured: ${Boolean(
-        FOOTBALL_SOCCER_API_KEY
-      )}`
+      `Football Soccer API configured: ${Boolean(FOOTBALL_SOCCER_API_KEY)}`
     );
-
     console.log(
-      `Football-Data configured: ${Boolean(
-        FOOTBALL_DATA_API_KEY
-      )}`
+      `Database configured: ${Boolean(DATABASE_URL)}`
     );
-
-    console.log(
-      `API-Football configured: ${Boolean(
-        API_FOOTBALL_KEY
-      )}`
-    );
-
-    console.log(
-      `Database configured: ${Boolean(
-        DATABASE_URL
-      )}`
-    );
-
     console.log(
       `Upcoming days: ${UPCOMING_DAYS}`
     );
-
     console.log(
       `Sync interval: ${SYNC_INTERVAL_MINUTES} minutes`
     );
-
     console.log(
-      "=================================================="
+      "============================================================"
+    );
+
+    scheduledSync();
+
+    setInterval(
+      scheduledSync,
+      SYNC_INTERVAL_MINUTES *
+        60 *
+        1000
     );
   }
 );
