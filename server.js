@@ -1992,7 +1992,7 @@ app.get("/", (req, res) => {
   res.sendFile(INDEX_FILE);
 });
 
-app.get("*", (req, res) => {
+app.use((req, res, next) => {
   if (req.path.startsWith("/api/")) {
     return res.status(404).json({
       ok: false,
